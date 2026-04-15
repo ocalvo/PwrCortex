@@ -450,7 +450,7 @@ function script:New-ResponseObj {
         'DefaultDisplayPropertySet',
         [string[]]@('Provider','Model','TotalTokens','ElapsedSec','Summary'))
     $obj.PSObject.Members.Add(
-        [System.Management.Automation.PSMemberSet]::new('PSStandardMembers',@($dds)))
+        [System.Management.Automation.PSMemberSet]::new('PSStandardMembers',[System.Management.Automation.PSMemberInfo[]]@($dds)))
     $obj
 }
 
@@ -1464,7 +1464,7 @@ function script:Invoke-SwarmDispatcher {
             if ($t.Status -notin 'pending','waiting') { continue }
 
             # Check if any dependency failed → skip this task
-            $depFailed = $t.DependsOn | Where-Object { $state[$_].Status -eq 'failed' -or $state[$_].Status -eq 'skipped' }
+            $depFailed = @($t.DependsOn | Where-Object { $state[$_].Status -eq 'failed' -or $state[$_].Status -eq 'skipped' })
             if ($depFailed.Count -gt 0) {
                 $t.Status = 'skipped'
                 $t.Error  = "Skipped: dependency $($depFailed -join ', ') failed"
@@ -1673,7 +1673,9 @@ function Invoke-LLMSwarm {
             -Shared $script:SwarmShared -TimeoutSec $TimeoutSec
 
         $finishedTasks | ForEach-Object {
-            if ($_.Result -and $_.Result.TotalTokens) { $totalTokens += $_.Result.TotalTokens }
+            if ($_.Result -and ($_.Result.PSObject.Properties.Name -contains 'TotalTokens')) {
+                $totalTokens += $_.Result.TotalTokens
+            }
         }
 
         # ── Phase 3: Synthesize ───────────────────────────────────────────
@@ -1702,7 +1704,7 @@ function Invoke-LLMSwarm {
             'DefaultDisplayPropertySet',
             [string[]]@('Goal','TotalTokens','TotalSec','Synthesis'))
         $result.PSObject.Members.Add(
-            [System.Management.Automation.PSMemberSet]::new('PSStandardMembers',@($dds)))
+            [System.Management.Automation.PSMemberSet]::new('PSStandardMembers',[System.Management.Automation.PSMemberInfo[]]@($dds)))
 
         if (-not $Quiet) { script:Write-SwarmSummary -Result $result }
 
