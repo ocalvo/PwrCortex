@@ -16,13 +16,19 @@ jobs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      - name: Check token configuration
+        env:
+          HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+        run: |
+          if [ "$HAS_RELEASE_TOKEN" = "true" ]; then
+            echo "✓ Using RELEASE_PLEASE_TOKEN (PAT) for PR creation"
+          else
+            echo "::warning title=RELEASE_PLEASE_TOKEN not set::Falling back to GITHUB_TOKEN. PR creation will fail unless 'Allow GitHub Actions to create and approve pull requests' is enabled in Settings → Actions → General. To fix, add a PAT with repo scope as the RELEASE_PLEASE_TOKEN secret."
+          fi
+
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          # Use a PAT stored as RELEASE_PLEASE_TOKEN to create release PRs.
-          # The default GITHUB_TOKEN cannot create PRs unless the repo setting
-          # "Allow GitHub Actions to create and approve pull requests" is enabled
-          # (Settings → Actions → General → Workflow permissions).
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
   publish:
