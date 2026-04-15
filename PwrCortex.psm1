@@ -260,14 +260,14 @@ $script:DestructivePattern = '^(Remove|Stop|Kill|Format|Clear|Reset|Disable|Unin
 # The single tool definition exposed to all providers
 $script:AgentTool = @{
     name        = 'invoke_powershell'
-    description = 'Execute any PowerShell expression and receive the result as JSON. Use real cmdlets and pipelines. All loaded modules and their claude.md directives are available.'
+    description = 'Execute a PowerShell expression in a live session. Results are stored in $refs[id] for reuse in later calls. All loaded modules and their claude.md directives are available.'
     input_schema = @{
         type       = 'object'
         required   = @('expression')
         properties = @{
             expression = @{
                 type        = 'string'
-                description = 'A valid PowerShell expression or pipeline. Output will be serialized with ConvertTo-Json and returned to you.'
+                description = 'A valid PowerShell expression or pipeline. Output is stored in $refs and a summary returned. Reference previous results via $refs[id].'
             }
         }
     }
@@ -387,6 +387,9 @@ $($_.Directive.Trim())
 You are an expert PowerShell assistant operating inside the environment described above.
 - Prefer modules already loaded; reference real cmdlets.
 - When using invoke_powershell, emit precise pipeline expressions.
+- Tool results are stored in `$refs[id]`. Chain prior results in later calls: `$refs[1] | Sort-Object CPU`.
+- The session is live — variables and state persist across tool calls.
+- Stream output (errors, warnings, verbose, debug) is captured and shown separately.
 - For destructive operations (Remove-, Stop-, Format- etc.) always warn the user before acting.
 - If a module has a claude.md directive, follow its conventions exactly.
 "@)
@@ -534,8 +537,67 @@ function script:Test-IsDestructive([string]$Expression) {
     return $false
 }
 
+function script:New-AgentSession {
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    foreach ($mod in (Get-Module)) { $iss.ImportPSModule($mod.Name) }
+    foreach ($entry in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        $iss.EnvironmentVariables.Add(
+            [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+                $entry.Key, $entry.Value, ''))
+    }
+    $refs = @{}
+    $iss.Variables.Add(
+        [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+            'refs', $refs, 'Agent object registry'))
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+    $rs.Open()
+    @{ Runspace = $rs; Refs = $refs; NextId = 0 }
+}
+
+function script:Close-AgentSession([hashtable]$Session) {
+    if ($Session -and $Session.Runspace) {
+        $Session.Runspace.Close()
+        $Session.Runspace.Dispose()
+        $Session.Runspace = $null
+    }
+}
+
+function script:Format-RefSummary {
+    param([int]$Id, [object]$Value, [int]$MaxLines = 15)
+
+    if ($null -eq $Value) { return "ref:$Id → `$null" }
+
+    $items = @($Value)
+    $typeName = if ($items.Count -eq 0) { '[empty]' }
+                elseif ($items.Count -gt 1) { "[$($items[0].GetType().Name)[]] $($items.Count) items" }
+                else { "[$($items[0].GetType().Name)]" }
+
+    $preview = ($Value | Out-String -Width 120).TrimEnd()
+    $lines = $preview -split "`r?`n"
+    if ($lines.Count -gt $MaxLines) {
+        $preview = ($lines[0..($MaxLines - 1)] -join "`n") + "`n... ($($lines.Count) lines total)"
+    }
+    "ref:$Id -> $typeName`n$preview"
+}
+
+function script:Format-Streams([System.Management.Automation.PowerShell]$PS) {
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($e in $PS.Streams.Error)       { $parts.Add("ERROR: $e") }
+    foreach ($w in $PS.Streams.Warning)     { $parts.Add("WARNING: $w") }
+    foreach ($v in $PS.Streams.Verbose)     { $parts.Add("VERBOSE: $v") }
+    foreach ($d in $PS.Streams.Debug)       { $parts.Add("DEBUG: $d") }
+    foreach ($i in $PS.Streams.Information) { $parts.Add("INFO: $($i.MessageData)") }
+    if ($parts.Count -gt 0) { return "`n--- streams ---`n" + ($parts -join "`n") }
+    return ''
+}
+
 function script:Invoke-GuardedExpression {
-    param([string]$Expression, [bool]$AutoConfirm=$false)
+    param(
+        [string]$Expression,
+        [hashtable]$AgentSession,
+        [bool]$AutoConfirm = $false,
+        [int]$TimeoutSec = 30
+    )
 
     $isDestructive = script:Test-IsDestructive $Expression
     $confirmEnv    = [System.Environment]::GetEnvironmentVariable('LLM_CONFIRM_DANGEROUS')
@@ -546,20 +608,52 @@ function script:Invoke-GuardedExpression {
         $answer = $Host.UI.ReadLine()
         if ($answer -notmatch '^[Yy]$') {
             return [PSCustomObject]@{
-                Output  = '{"error":"User denied execution of destructive expression."}'
+                Output  = 'User denied execution of destructive expression.'
                 IsError = $true
                 Denied  = $true
             }
         }
     }
 
+    $ps = [PowerShell]::Create()
+    $ps.Runspace = $AgentSession.Runspace
+    $null = $ps.AddScript($Expression, $false)
+
     try {
-        $result = Invoke-Expression $Expression 2>&1
-        $json   = $result | ConvertTo-Json -Compress -Depth 6 -ErrorAction Stop
-        [PSCustomObject]@{ Output=$json; IsError=$false; Denied=$false }
-    } catch {
+        $async = $ps.BeginInvoke()
+        if (-not $async.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($TimeoutSec))) {
+            $ps.Stop()
+            $ps.Dispose()
+            return [PSCustomObject]@{
+                Output  = "Tool call timed out after ${TimeoutSec}s. Try a simpler approach."
+                IsError = $true
+                Denied  = $false
+            }
+        }
+        $result  = $ps.EndInvoke($async)
+        $streams = script:Format-Streams $ps
+        $ps.Dispose()
+
+        $output = @($result)
+        if ($output.Count -eq 0 -and -not $streams) {
+            return [PSCustomObject]@{ Output = '(no output)'; IsError = $false; Denied = $false }
+        }
+
+        $summary = ''
+        if ($output.Count -gt 0) {
+            $AgentSession.NextId++
+            $id = $AgentSession.NextId
+            $val = if ($output.Count -eq 1) { $output[0] } else { $output }
+            $AgentSession.Refs[$id] = $val
+            $summary = script:Format-RefSummary -Id $id -Value $val
+        }
+
+        [PSCustomObject]@{ Output = ($summary + $streams); IsError = $false; Denied = $false }
+    }
+    catch {
+        $ps.Dispose()
         [PSCustomObject]@{
-            Output  = "{`"error`":`"$($_.ToString() -replace '"','\"')`"}"
+            Output  = "Error: $($_.ToString())"
             IsError = $true
             Denied  = $false
         }
@@ -727,6 +821,9 @@ function Invoke-LLMAgent {
         [ValidateRange(1,50)]
         [int]$MaxTurns = 10,
 
+        [ValidateRange(5,600)]
+        [int]$ToolTimeoutSec = 30,
+
         [switch]$AutoConfirm,
         [switch]$Quiet
     )
@@ -735,6 +832,9 @@ function Invoke-LLMAgent {
         if (-not $Model)    { $Model    = $script:Providers[$Provider].DefaultModel }
     }
     process {
+        $agentSession = script:New-AgentSession
+        try {
+
         $sys      = script:Build-SystemPrompt -UserSystemPrompt $SystemPrompt -IncludeEnv $true
         $messages = [System.Collections.Generic.List[object]]::new()
         $messages.Add(@{role='user';content=$Prompt})
@@ -772,7 +872,7 @@ function Invoke-LLMAgent {
                         $toolResults = [System.Collections.Generic.List[object]]::new()
                         foreach ($tc in $toolCalls) {
                             $expr   = $tc.input.expression
-                            $guarded = script:Invoke-GuardedExpression -Expression $expr -AutoConfirm $AutoConfirm.IsPresent
+                            $guarded = script:Invoke-GuardedExpression -Expression $expr -AgentSession $agentSession -AutoConfirm $AutoConfirm.IsPresent -TimeoutSec $ToolTimeoutSec
                             $tcObj  = [PSCustomObject]@{
                                 PSTypeName = 'LLMToolCall'
                                 CallNum    = $allToolCalls.Count + 1
@@ -805,7 +905,7 @@ function Invoke-LLMAgent {
                     if ($toolCalls) {
                         foreach ($tc in $toolCalls) {
                             $expr    = ($tc.function.arguments | ConvertFrom-Json).expression
-                            $guarded = script:Invoke-GuardedExpression -Expression $expr -AutoConfirm $AutoConfirm.IsPresent
+                            $guarded = script:Invoke-GuardedExpression -Expression $expr -AgentSession $agentSession -AutoConfirm $AutoConfirm.IsPresent -TimeoutSec $ToolTimeoutSec
                             $tcObj   = [PSCustomObject]@{
                                 PSTypeName = 'LLMToolCall'
                                 CallNum    = $allToolCalls.Count + 1
@@ -840,6 +940,8 @@ function Invoke-LLMAgent {
             Write-Host ""
         }
         $resp
+
+        } finally { script:Close-AgentSession $agentSession }
     }
 }
 
