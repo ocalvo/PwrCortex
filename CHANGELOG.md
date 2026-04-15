@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/ocalvo/PwrCortex/compare/v0.2.0...v0.2.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* PowerShell 7.6 compatibility for PSMemberSet and null guards ([#9](https://github.com/ocalvo/PwrCortex/issues/9)) ([e43e7c8](https://github.com/ocalvo/PwrCortex/commit/e43e7c82ffb9c16983e942ad000187db6728660e))
+
 ## [0.2.0](https://github.com/ocalvo/PwrCortex/compare/v0.1.0...v0.2.0) (2026-04-15)
 
 
