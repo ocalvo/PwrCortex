@@ -21,7 +21,7 @@
     )
     CmdletsToExport   = @()
     VariablesToExport  = @()
-    AliasesToExport    = @()
+    AliasesToExport    = @('swarm', 'agent', 'llm', 'chat')
     PrivateData       = @{
         PSData = @{
             Tags       = @('LLM', 'AI', 'Agent', 'Swarm', 'Anthropic', 'OpenAI', 'Claude', 'GPT', 'PowerShell')

@@ -48,6 +48,23 @@ $script:Providers = @{
     }
 }
 
+# ── Preference propagation ────────────────────────────────────────────────────
+# Public [CmdletBinding()] functions set local $VerbosePreference etc. but
+# private module-scope functions don't inherit them. These helpers propagate
+# and restore preferences so Write-Verbose/Debug/Warning work in private code.
+
+function script:Push-Preferences {
+    $script:_savedVerbose = if (Test-Path variable:script:VerbosePreference) { $script:VerbosePreference } else { 'SilentlyContinue' }
+    $script:_savedDebug   = if (Test-Path variable:script:DebugPreference)   { $script:DebugPreference }   else { 'SilentlyContinue' }
+    $script:_savedWarning = if (Test-Path variable:script:WarningPreference) { $script:WarningPreference } else { 'Continue' }
+}
+
+function script:Pop-Preferences {
+    $script:VerbosePreference = $script:_savedVerbose
+    $script:DebugPreference   = $script:_savedDebug
+    $script:WarningPreference = $script:_savedWarning
+}
+
 # Verbs whose presence in an expression requires user confirmation
 $script:DestructivePattern = '^(Remove|Stop|Kill|Format|Clear|Reset|Disable|Uninstall|Delete|Erase|Purge|Drop|Revoke|Deny)-'
 

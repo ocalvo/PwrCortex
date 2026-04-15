@@ -6,6 +6,7 @@ function Get-LLMEnvironment {
 #>
     [CmdletBinding()]
     param()
+    Write-Verbose "Capturing PS environment snapshot"
     $modules = Get-Module | Select-Object Name, Version, ModuleType
     $safeEnv = [System.Environment]::GetEnvironmentVariables().GetEnumerator() |
         Where-Object { $_.Key -notmatch '(KEY|TOKEN|SECRET|PASS|CRED|AUTH|API)' } |

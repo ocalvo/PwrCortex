@@ -3,10 +3,13 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 function script:Get-ApiKey([string]$Provider) {
-    $key = [System.Environment]::GetEnvironmentVariable($script:Providers[$Provider].EnvKeyName)
+    $envName = $script:Providers[$Provider].EnvKeyName
+    $key = [System.Environment]::GetEnvironmentVariable($envName)
     if ([string]::IsNullOrWhiteSpace($key)) {
-        throw "Set `$$($script:Providers[$Provider].EnvKeyName) to use $Provider."
+        $err = "API key not configured. Set environment variable $envName to use $Provider."
+        Write-Error $err -ErrorAction Stop
     }
+    Write-Debug "API key resolved for $Provider ($($envName.Substring(0,8))…)"
     $key
 }
 
@@ -66,14 +69,25 @@ function script:Invoke-AnthropicRaw {
     if ($SystemPrompt)            { $body.system      = $SystemPrompt }
     if ($Tools.Count -gt 0)      { $body.tools        = $Tools }
     if ($PSBoundParameters.ContainsKey('Temperature')) { $body.temperature = $Temperature }
+    Write-Verbose "Anthropic API call: $Model, max_tokens=$MaxTokens$(if ($Tools.Count) {", tools=$($Tools.Count)"})"
+    Write-Debug "Anthropic request body keys: $($body.Keys -join ', ')"
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $r  = Invoke-RestMethod -Uri $script:Providers.Anthropic.BaseUrl -Method POST `
-        -Headers @{
-            'x-api-key'         = $key
-            'anthropic-version' = '2023-06-01'
-            'Content-Type'      = 'application/json'
-        } -Body ($body | ConvertTo-Json -Depth 12)
+    try {
+        $r = Invoke-RestMethod -Uri $script:Providers.Anthropic.BaseUrl -Method POST `
+            -Headers @{
+                'x-api-key'         = $key
+                'anthropic-version' = '2023-06-01'
+                'Content-Type'      = 'application/json'
+            } -Body ($body | ConvertTo-Json -Depth 12)
+    } catch {
+        $status = $_.Exception.Response.StatusCode.value__
+        if ($status -eq 429) {
+            Write-Warning "Anthropic rate limit hit. Retry after backoff."
+        }
+        Write-Error "Anthropic API error ($status): $_" -ErrorAction Stop
+    }
     $sw.Stop()
+    Write-Verbose "Anthropic response: $([math]::Round($sw.Elapsed.TotalSeconds,2))s, stop=$($r.stop_reason)"
     @{ Response=$r; ElapsedSec=$sw.Elapsed.TotalSeconds }
 }
 
@@ -87,17 +101,29 @@ function script:Invoke-OpenAIRaw {
     $body = @{ model=$Model; messages=$msgs; max_tokens=$MaxTokens }
     if ($Tools.Count -gt 0)      { $body.tools = $Tools | ForEach-Object { @{type='function';function=$_} } }
     if ($PSBoundParameters.ContainsKey('Temperature')) { $body.temperature = $Temperature }
+    Write-Verbose "OpenAI API call: $Model, max_tokens=$MaxTokens$(if ($Tools.Count) {", tools=$($Tools.Count)"})"
+    Write-Debug "OpenAI request body keys: $($body.Keys -join ', ')"
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $r  = Invoke-RestMethod -Uri $script:Providers.OpenAI.BaseUrl -Method POST `
-        -Headers @{ 'Authorization'="Bearer $key"; 'Content-Type'='application/json' } `
-        -Body ($body | ConvertTo-Json -Depth 12)
+    try {
+        $r = Invoke-RestMethod -Uri $script:Providers.OpenAI.BaseUrl -Method POST `
+            -Headers @{ 'Authorization'="Bearer $key"; 'Content-Type'='application/json' } `
+            -Body ($body | ConvertTo-Json -Depth 12)
+    } catch {
+        $status = $_.Exception.Response.StatusCode.value__
+        if ($status -eq 429) {
+            Write-Warning "OpenAI rate limit hit. Retry after backoff."
+        }
+        Write-Error "OpenAI API error ($status): $_" -ErrorAction Stop
+    }
     $sw.Stop()
+    Write-Verbose "OpenAI response: $([math]::Round($sw.Elapsed.TotalSeconds,2))s, finish=$($r.choices[0].finish_reason)"
     @{ Response=$r; ElapsedSec=$sw.Elapsed.TotalSeconds }
 }
 
 function script:Invoke-ProviderCompletion {
     param([string]$Provider, [string]$Model, [string]$SystemPrompt,
           [array]$Messages, [int]$MaxTokens, [double]$Temperature, [bool]$WithEnv)
+    Write-Verbose "Provider completion: $Provider/$Model, messages=$($Messages.Count), withEnv=$WithEnv"
     $sys = script:Build-SystemPrompt -UserSystemPrompt $SystemPrompt -IncludeEnv $WithEnv
     $p   = @{ Model=$Model; SystemPrompt=$sys; Messages=$Messages; MaxTokens=$MaxTokens }
     if ($PSBoundParameters.ContainsKey('Temperature')) { $p.Temperature = $Temperature }
@@ -128,6 +154,7 @@ function script:Build-SystemPrompt {
     $sections = [System.Collections.Generic.List[string]]::new()
 
     if ($IncludeEnv) {
+        Write-Verbose "Building system prompt with environment context"
         $e    = Get-LLMEnvironment
         $mods = ($e.LoadedModules | ForEach-Object { "$($_.Name) v$($_.Version)" }) -join ', '
 
@@ -144,6 +171,7 @@ function script:Build-SystemPrompt {
 "@)
 
         $directives = Get-LLMModuleDirectives
+        Write-Verbose "Discovered $(@($directives).Count) module directive(s)"
         if ($directives) {
             $dBlocks = $directives | ForEach-Object {
 "<module name=""$($_.Module)"" version=""$($_.Version)"">
@@ -166,5 +194,7 @@ You are an expert PowerShell assistant operating inside the environment describe
     }
 
     if ($UserSystemPrompt) { $sections.Add($UserSystemPrompt) }
-    ($sections -join "`n`n").Trim()
+    $prompt = ($sections -join "`n`n").Trim()
+    Write-Debug "System prompt length: $($prompt.Length) chars, $($sections.Count) section(s)"
+    $prompt
 }

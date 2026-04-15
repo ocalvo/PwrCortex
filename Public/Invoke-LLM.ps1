@@ -51,24 +51,33 @@ function Invoke-LLM {
         if (-not $Model)    { $Model    = $script:Providers[$Provider].DefaultModel }
     }
     process {
-        $p = @{
-            Provider=    $Provider; Model=$Model; SystemPrompt=$SystemPrompt
-            Messages=    @(@{role='user';content=$Prompt})
-            MaxTokens=   $MaxTokens; WithEnv=$WithEnvironment.IsPresent
-        }
-        if ($PSBoundParameters.ContainsKey('Temperature')) { $p.Temperature = $Temperature }
-        $resp = script:Invoke-ProviderCompletion @p
-
-        if (-not $Quiet) {
-            script:Write-ResponseBox -Content $resp.Content -Provider $resp.Provider `
-                -Model $resp.Model -InputTokens $resp.InputTokens `
-                -OutputTokens $resp.OutputTokens -StopReason $resp.StopReason `
-                -ElapsedSec $resp.ElapsedSec
-            if ($resp.Steps.Count -gt 0) {
-                script:Write-Status "Response has $($resp.Steps.Count) steps — use Expand-LLMProcess for detail" 'info'
-                Write-Host ""
+        script:Push-Preferences
+        $script:VerbosePreference = $VerbosePreference
+        $script:DebugPreference   = $DebugPreference
+        try {
+            Write-Verbose "Invoke-LLM: $Provider/$Model, prompt=$($Prompt.Length) chars"
+            $p = @{
+                Provider=    $Provider; Model=$Model; SystemPrompt=$SystemPrompt
+                Messages=    @(@{role='user';content=$Prompt})
+                MaxTokens=   $MaxTokens; WithEnv=$WithEnvironment.IsPresent
             }
+            if ($PSBoundParameters.ContainsKey('Temperature')) { $p.Temperature = $Temperature }
+            $resp = script:Invoke-ProviderCompletion @p
+
+            Write-Verbose "Invoke-LLM completed: $($resp.TotalTokens) tokens, $([math]::Round($resp.ElapsedSec,2))s"
+            if (-not $Quiet) {
+                script:Write-ResponseBox -Content $resp.Content -Provider $resp.Provider `
+                    -Model $resp.Model -InputTokens $resp.InputTokens `
+                    -OutputTokens $resp.OutputTokens -StopReason $resp.StopReason `
+                    -ElapsedSec $resp.ElapsedSec
+                if ($resp.Steps.Count -gt 0) {
+                    script:Write-Status "Response has $($resp.Steps.Count) steps — use Expand-LLMProcess for detail" 'info'
+                    Write-Host ""
+                }
+            }
+            $resp
+        } finally {
+            script:Pop-Preferences
         }
-        $resp
     }
 }

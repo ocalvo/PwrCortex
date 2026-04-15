@@ -42,6 +42,7 @@ function New-LLMChat {
     if (-not $Model) { $Model = $script:Providers[$Provider].DefaultModel }
     if (-not $Name)  { $Name  = "$Provider-$(Get-Random -Max 9999)" }
 
+    Write-Verbose "New-LLMChat: $Provider/$Model, agentic=$($Agentic.IsPresent), withEnv=$($WithEnvironment.IsPresent), name=$Name"
     [PSCustomObject]@{
         PSTypeName      = 'LLMChat'
         Id              = $Name

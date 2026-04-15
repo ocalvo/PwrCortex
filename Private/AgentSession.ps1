@@ -13,11 +13,14 @@ function script:Test-IsDestructive([string]$Expression) {
 
 function script:New-AgentSession {
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
-    foreach ($mod in (Get-Module)) { $iss.ImportPSModule($mod.Name) }
+    $mods = @(Get-Module)
+    foreach ($mod in $mods) { $iss.ImportPSModule($mod.Name) }
+    $envCount = 0
     foreach ($entry in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
         $iss.EnvironmentVariables.Add(
             [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
                 $entry.Key, $entry.Value, ''))
+        $envCount++
     }
     $refs = @{}
     $iss.Variables.Add(
@@ -25,11 +28,13 @@ function script:New-AgentSession {
             'refs', $refs, 'Agent object registry'))
     $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
     $rs.Open()
+    Write-Verbose "Agent session opened: $($mods.Count) modules, $envCount env vars, runspace=$($rs.InstanceId)"
     @{ Runspace = $rs; Refs = $refs; NextId = 0 }
 }
 
 function script:Close-AgentSession([hashtable]$Session) {
     if ($Session -and $Session.Runspace) {
+        Write-Verbose "Closing agent session: $($Session.Refs.Count) ref(s) collected"
         $Session.Runspace.Close()
         $Session.Runspace.Dispose()
         $Session.Runspace = $null
@@ -73,20 +78,24 @@ function script:Invoke-GuardedExpression {
         [int]$TimeoutSec = 30
     )
 
+    Write-Debug "Guarded expression: $Expression"
     $isDestructive = script:Test-IsDestructive $Expression
     $confirmEnv    = [System.Environment]::GetEnvironmentVariable('LLM_CONFIRM_DANGEROUS')
     $skipConfirm   = $AutoConfirm -or ($confirmEnv -eq '0')
 
     if ($isDestructive -and -not $skipConfirm) {
+        Write-Warning "Destructive expression detected: $($Expression.Substring(0, [math]::Min(80, $Expression.Length)))"
         script:Write-ConfirmBox -Expression $Expression
         $answer = $Host.UI.ReadLine()
         if ($answer -notmatch '^[Yy]$') {
+            Write-Verbose "User denied destructive expression"
             return [PSCustomObject]@{
                 Output  = 'User denied execution of destructive expression.'
                 IsError = $true
                 Denied  = $true
             }
         }
+        Write-Verbose "User approved destructive expression"
     }
 
     $ps = [PowerShell]::Create()
@@ -94,8 +103,10 @@ function script:Invoke-GuardedExpression {
     $null = $ps.AddScript($Expression, $false)
 
     try {
+        Write-Verbose "Executing tool call (timeout=${TimeoutSec}s)"
         $async = $ps.BeginInvoke()
         if (-not $async.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($TimeoutSec))) {
+            Write-Warning "Tool call timed out after ${TimeoutSec}s: $($Expression.Substring(0, [math]::Min(60, $Expression.Length)))"
             $ps.Stop()
             $ps.Dispose()
             return [PSCustomObject]@{
@@ -120,11 +131,13 @@ function script:Invoke-GuardedExpression {
             $val = if ($output.Count -eq 1) { $output[0] } else { $output }
             $AgentSession.Refs[$id] = $val
             $summary = script:Format-RefSummary -Id $id -Value $val
+            Write-Verbose "Tool call stored ref:$id ($(if ($output.Count -eq 1) { $val.GetType().Name } else { "$($output.Count) items" }))"
         }
 
         [PSCustomObject]@{ Output = ($summary + $streams); IsError = $false; Denied = $false }
     }
     catch {
+        Write-Error "Tool call failed: $_" -ErrorAction Continue
         $ps.Dispose()
         [PSCustomObject]@{
             Output  = "Error: $($_.ToString())"

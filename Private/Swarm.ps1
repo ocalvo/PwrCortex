@@ -90,6 +90,7 @@ $Context
 Goal: $Goal
 "@
 
+    Write-Verbose "Orchestrator decomposing goal into max $MaxTasks tasks ($Provider/$Model)"
     $resp = script:Invoke-ProviderCompletion -Provider $Provider -Model $Model `
         -SystemPrompt $schema -Messages @(@{role='user';content="Decompose this goal into tasks."}) `
         -MaxTokens 2048 -WithEnv $false
@@ -97,9 +98,10 @@ Goal: $Goal
     $json = $resp.Content -replace '```json',''-replace '```','' -replace '(?s)^[^[\{]*','' | ForEach-Object { $_.Trim() }
     try {
         $tasks = $json | ConvertFrom-Json
+        Write-Verbose "Orchestrator produced $(@($tasks).Count) task(s)"
         return @{ Tasks=$tasks; Tokens=$resp.TotalTokens }
     } catch {
-        throw "Orchestrator failed to produce valid JSON task list: $_`nRaw: $($resp.Content)"
+        Write-Error "Orchestrator produced invalid JSON task list: $_" -ErrorAction Stop
     }
 }
 
@@ -131,7 +133,8 @@ function script:New-SwarmRunspacePool {
     param([int]$MaxRunspaces = 4)
 
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
-    foreach ($mod in (Get-Module)) {
+    $mods = @(Get-Module)
+    foreach ($mod in $mods) {
         $iss.ImportPSModule($mod.Name)
     }
     foreach ($entry in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
@@ -143,6 +146,7 @@ function script:New-SwarmRunspacePool {
     $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(
         1, $MaxRunspaces, $iss, $Host)
     $pool.Open()
+    Write-Verbose "RunspacePool opened: max=$MaxRunspaces, $($mods.Count) modules cloned"
     $pool
 }
 
@@ -159,6 +163,7 @@ function script:Invoke-SwarmDispatcher {
         [int]$TimeoutSec = 300
     )
 
+    Write-Verbose "Swarm dispatcher: $($Tasks.Count) tasks, maxRunspaces=$MaxRunspaces, timeout=${TimeoutSec}s"
     $pool = script:New-SwarmRunspacePool -MaxRunspaces $MaxRunspaces
 
     $state = @{}
@@ -196,6 +201,7 @@ function script:Invoke-SwarmDispatcher {
                 if ($depFailed.Count -gt 0) {
                     $t.Status = 'skipped'
                     $t.Error  = "Skipped: dependency $($depFailed -join ', ') failed"
+                    Write-Warning "Task $id skipped: dependency $($depFailed -join ', ') failed"
                     script:Write-SwarmTaskLine -Task $t
                     $anyProgress = $true
                     continue
@@ -219,6 +225,7 @@ function script:Invoke-SwarmDispatcher {
 
                 $t.Status    = 'running'
                 $t.StartedAt = [datetime]::UtcNow
+                Write-Verbose "Task $id dispatching: $($t.Name)"
                 $ps = [PowerShell]::Create()
                 $ps.RunspacePool = $pool
                 $null = $ps.AddScript($script:WorkerBlock).
@@ -245,6 +252,9 @@ function script:Invoke-SwarmDispatcher {
                     $t.Result     = $Shared["result::$id"]
                     if ($t.Status -eq 'failed' -and $t.Result -is [string]) {
                         $t.Error = $t.Result
+                        Write-Warning "Task $id failed ($([math]::Round($t.ElapsedSec,1))s): $($t.Error.Substring(0, [math]::Min(100, $t.Error.Length)))"
+                    } else {
+                        Write-Verbose "Task $id completed ($([math]::Round($t.ElapsedSec,1))s)"
                     }
 
                     $t.Pipeline.Dispose()
@@ -260,6 +270,7 @@ function script:Invoke-SwarmDispatcher {
             if (-not $allDone) { Start-Sleep -Milliseconds $PollMs }
 
             if (([datetime]::UtcNow - $startTime).TotalSeconds -gt $TimeoutSec) {
+                Write-Warning "Swarm timed out after ${TimeoutSec}s — cancelling remaining tasks"
                 script:Write-Status "Swarm timed out after ${TimeoutSec}s" 'warn'
                 foreach ($id in $allIds) {
                     $t = $state[$id]
@@ -299,6 +310,9 @@ function script:Invoke-SwarmDispatcher {
 function script:Invoke-OrchestratorSynthesize {
     param([string]$Goal, [PSCustomObject[]]$TaskResults, [string]$Provider, [string]$Model)
 
+    $done = @($TaskResults | Where-Object Status -eq 'done').Count
+    $failed = @($TaskResults | Where-Object Status -eq 'failed').Count
+    Write-Verbose "Synthesizing $done successful / $failed failed task(s)"
     $resultBlocks = $TaskResults | ForEach-Object {
         $content = if ($_.Result -is [PSCustomObject] -and $_.Result.Content) { $_.Result.Content }
                    else { $_.Error ?? 'no result' }
