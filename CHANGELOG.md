@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/ocalvo/PwrCortex/compare/v0.4.0...v0.5.0) (2026-04-15)
+
+
+### Features
+
+* expose native objects on .Result property of LLMResponse ([#16](https://github.com/ocalvo/PwrCortex/issues/16)) ([a36d313](https://github.com/ocalvo/PwrCortex/commit/a36d3137918e85c4b873c8aaa8ae3435f665189b))
+
 ## [0.4.0](https://github.com/ocalvo/PwrCortex/compare/v0.3.0...v0.4.0) (2026-04-15)
 
 
