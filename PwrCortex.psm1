@@ -1270,9 +1270,10 @@ function Get-LLMProviders {
 #  DependsOn, forming a DAG — the dispatcher releases each task only once all
 #  its dependencies have finished successfully.
 #
-#  Thread communication uses a [ConcurrentDictionary] shared across runspaces:
-#    $script:SwarmShared["result::<taskId>"] = <json>    set by workers
-#    $script:SwarmShared["status::<taskId>"] = <status>  running|done|failed
+#  Thread communication uses a [ConcurrentDictionary[string,object]] shared
+#  across runspaces (same process, no serialization boundary):
+#    $script:SwarmShared["result::<taskId>"] = [LLMResponse]  set by workers
+#    $script:SwarmShared["status::<taskId>"] = <status>       running|done|failed
 #
 #  The orchestrator receives all worker results and runs a SYNTHESIS completion
 #  to produce a final coherent answer.
@@ -1288,7 +1289,7 @@ function Get-LLMProviders {
 #    .TotalSec      double
 #    .StartedAt     datetime
 
-$script:SwarmShared = [System.Collections.Concurrent.ConcurrentDictionary[string,string]]::new()
+$script:SwarmShared = [System.Collections.Concurrent.ConcurrentDictionary[string,object]]::new()
 
 # ── Render helpers (swarm-specific) ──────────────────────────────────────────
 
@@ -1387,24 +1388,17 @@ $script:WorkerBlock = {
         [string]$TaskPrompt,
         [string]$Provider,
         [string]$Model,
-        [System.Collections.Concurrent.ConcurrentDictionary[string,string]]$Shared
+        [System.Collections.Concurrent.ConcurrentDictionary[string,object]]$Shared
     )
 
     try {
         $Shared["status::$TaskId"] = 'running'
         $resp = Invoke-LLMAgent -Prompt $TaskPrompt -Provider $Provider -Model $Model -Quiet
-        $out  = [PSCustomObject]@{
-            TaskId       = $TaskId
-            Content      = $resp.Content
-            TotalTokens  = $resp.TotalTokens
-            ElapsedSec   = $resp.ElapsedSec
-            ToolCallCount= @($resp.ToolCalls).Count
-        } | ConvertTo-Json -Compress -Depth 4
-        $Shared["result::$TaskId"]  = $out
-        $Shared["status::$TaskId"]  = 'done'
+        $Shared["result::$TaskId"] = $resp
+        $Shared["status::$TaskId"] = 'done'
     } catch {
-        $Shared["result::$TaskId"]  = "{`"error`":`"$($_.ToString() -replace '"','\"')`"}"
-        $Shared["status::$TaskId"]  = 'failed'
+        $Shared["result::$TaskId"] = $_.ToString()
+        $Shared["status::$TaskId"] = 'failed'
     }
 }
 
@@ -1440,7 +1434,7 @@ function script:Invoke-SwarmDispatcher {
         [PSCustomObject[]]$Tasks,
         [string]$Provider,
         [string]$Model,
-        [System.Collections.Concurrent.ConcurrentDictionary[string,string]]$Shared,
+        [System.Collections.Concurrent.ConcurrentDictionary[string,object]]$Shared,
         [int]$MaxRunspaces = 4,
         [int]$PollMs = 400,
         [int]$TimeoutSec = 300
@@ -1501,12 +1495,12 @@ function script:Invoke-SwarmDispatcher {
                     continue
                 }
 
-                # Substitute {{result::<id>}} placeholders from shared results
+                # Substitute {{result::<id>}} placeholders with upstream content
                 $prompt = $t.Prompt
                 foreach ($depId in $t.DependsOn) {
-                    $depResult = $Shared["result::$depId"]
-                    if ($depResult) {
-                        $prompt = $prompt -replace "{{result::$depId}}", $depResult
+                    $depObj = $Shared["result::$depId"]
+                    if ($depObj -and $depObj.Content) {
+                        $prompt = $prompt -replace "{{result::$depId}}", $depObj.Content
                     }
                 }
 
@@ -1537,13 +1531,10 @@ function script:Invoke-SwarmDispatcher {
                     try { $t.Pipeline.EndInvoke($t.AsyncResult) } catch {}
                     $t.ElapsedSec = ([datetime]::UtcNow - $t.StartedAt).TotalSeconds
                     $t.Status     = $Shared["status::$id"] ?? 'failed'
-                    $rawResult    = $Shared["result::$id"]
-
-                    try {
-                        $parsed   = $rawResult | ConvertFrom-Json
-                        $t.Result = $parsed
-                        if ($parsed.error) { $t.Error = $parsed.error }
-                    } catch { $t.Result = $rawResult }
+                    $t.Result     = $Shared["result::$id"]
+                    if ($t.Status -eq 'failed' -and $t.Result -is [string]) {
+                        $t.Error = $t.Result
+                    }
 
                     $t.Pipeline.Dispose()
                     $t.Pipeline    = $null
@@ -1600,7 +1591,8 @@ function script:Invoke-OrchestratorSynthesize {
     param([string]$Goal, [PSCustomObject[]]$TaskResults, [string]$Provider, [string]$Model)
 
     $resultBlocks = $TaskResults | ForEach-Object {
-        $content = if ($_.Result -and $_.Result.Content) { $_.Result.Content } else { $_.Error ?? 'no result' }
+        $content = if ($_.Result -is [PSCustomObject] -and $_.Result.Content) { $_.Result.Content }
+                   else { $_.Error ?? 'no result' }
         "<task id=""$($_.Id)"" name=""$($_.Name)"" status=""$($_.Status)"">$content</task>"
     }
 
@@ -1719,7 +1711,7 @@ function Invoke-LLMSwarm {
             -TimeoutSec $TimeoutSec
 
         $finishedTasks | ForEach-Object {
-            if ($_.Result -and ($_.Result.PSObject.Properties.Name -contains 'TotalTokens')) {
+            if ($_.Result -is [PSCustomObject] -and $_.Result.TotalTokens) {
                 $totalTokens += $_.Result.TotalTokens
             }
         }
