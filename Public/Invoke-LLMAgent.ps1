@@ -10,6 +10,12 @@ function Invoke-LLMAgent {
     can chain previous results via $refs[id]. The loop continues until the LLM stops
     issuing tool calls (stop_reason = end_turn) or MaxTurns is reached.
 
+    After the agent completes, all collected objects are returned on the response's
+    .Result property as a flat array of live .NET objects. Pipeline them directly:
+
+        $r = Invoke-LLMAgent "top 3 processes by memory" -Provider Anthropic -Quiet
+        $r.Result | Select-Object -First 1 | Stop-Process -WhatIf
+
     Destructive expressions (Remove-, Stop-, Format- etc.) require interactive
     confirmation unless -AutoConfirm is set or LLM_CONFIRM_DANGEROUS=0.
 
@@ -165,9 +171,16 @@ function Invoke-LLMAgent {
 
         } while ($stopReason -eq 'tool_use' -and $turns -lt $MaxTurns)
 
+        $result = $null
+        if ($agentSession.Refs.Count -gt 0) {
+            $result = @(foreach ($key in ($agentSession.Refs.Keys | Sort-Object)) {
+                $agentSession.Refs[$key]
+            })
+        }
         $resp = script:New-ResponseObj -Provider $Provider -Model $Model -Content $finalText `
             -InputTokens $totalIn -OutputTokens $totalOut -StopReason $stopReason `
-            -ResponseId '' -ElapsedSec $totalSec -Raw $null -ToolCalls $allToolCalls.ToArray()
+            -ResponseId '' -ElapsedSec $totalSec -Raw $null -ToolCalls $allToolCalls.ToArray() `
+            -Result $result
 
         if (-not $Quiet) {
             script:Write-ResponseBox -Content $finalText -Provider $Provider -Model $Model `

@@ -67,6 +67,25 @@ $refs[1][0] | Stop-Process -Force
 
 Two tool calls, ~10 tokens of context for the reference. Zero serialization. Full type safety.
 
+**And those objects come back to YOU on `.Result`:**
+
+```powershell
+$r = Invoke-LLMAgent "Top 3 processes by memory" -Provider Anthropic -Quiet
+
+$r.Content   # what the LLM said (text)
+$r.Result    # the actual [Process] objects it collected — a flat array
+
+# Pipeline them — these are real live .NET objects
+$r.Result | Format-Table ProcessName, Id, @{n='MB';e={[math]::Round($_.WorkingSet64/1MB)}}
+
+# Filter, chain, export — just like any other cmdlet output
+$r.Result | Where-Object CPU -gt 60 | Stop-Process -WhatIf
+$r.Result | Export-Csv top-procs.csv
+$r.Result | Select-Object -First 1   # first object
+```
+
+The response carries both the LLM's text answer (`.Content`) and every live object it gathered (`.Result`). Your script gets native PowerShell objects — not a string to parse, not JSON to deserialize.
+
 ### 2. PowerShell IS the tool
 
 Every other framework asks you to pre-register tools, write JSON schemas for each function, and maintain a dispatch table. PwrCortex collapses all of that to a single idea:
@@ -204,33 +223,33 @@ Set `$env:LLM_CONFIRM_DANGEROUS=0` to disable this in automated pipelines where 
 ├──────────────────────────────────────────────────┤
 │  Provider layer     Anthropic │ OpenAI             │
 ├──────────────────────────────────────────────────┤
-│  Agent Runspace     $refs registry, stream capture │
+│  Agent Runspace     $refs registry → .Result        │
 │  Swarm RunspacePool DAG scheduler, shared memory   │
 └──────────────────────────────────────────────────┘
 ```
 
-### The `$refs` Object Registry
+### The Object Registry: `$refs` inside, `.Result` outside
 
-Every tool call result is stored as a live object:
+During execution, every tool call stores its output as a live object in `$refs`:
 
 ```
-$refs[1] = [Process[]]    ← Get-Process output
+$refs[1] = [Process[]]           ← Get-Process output
 $refs[2] = [ServiceController[]] ← Get-Service output
-$refs[3] = [FileInfo[]]   ← Get-ChildItem output
+$refs[3] = [FileInfo[]]          ← Get-ChildItem output
 ```
 
-The LLM sees:
-```
-ref:1 -> [Process[]] 309 items
-Handles  NPM(K)  PM(M)  WS(M)  CPU(s)    Id  SI ProcessName
--------  ------  -----  -----  ------    --  -- -----------
-   1042     142  2,814  2,937   1,204  8472   1 msedge
-    ...
-```
-
-And chains with: `$refs[1] | Where-Object CPU -gt 100 | Sort-Object CPU -Desc`
-
+The LLM sees a compact summary and chains with `$refs[1] | Where-Object CPU -gt 100`.
 This costs ~5 tokens instead of ~50,000 tokens for serializing 309 process objects to JSON.
+
+After the agent completes, the registry is flattened into a pipeline-native array on `.Result`:
+
+```powershell
+$r = Invoke-LLMAgent "Show disk usage and top processes" -Provider Anthropic -Quiet
+
+$r.Result                              # all collected objects as a flat array
+$r.Result | Where-Object CPU -gt 100   # filter — works because they're real .NET objects
+$r.Result | Export-Csv report.csv      # export — no ConvertFrom-Json needed
+```
 
 ## Installation
 
@@ -263,8 +282,9 @@ Get-LLMProviders
 # Ask a question — returns a rich object, renders beautifully
 Invoke-LLM "What PS modules do I have for working with Azure?" -Provider Anthropic -WithEnvironment
 
-# Let the agent use real PS data to answer — results stay as native objects
-Invoke-LLMAgent "Find the top 5 processes by CPU and tell me what they do" -Provider Anthropic
+# Let the agent gather data — .Result gives you live .NET objects
+$r = Invoke-LLMAgent "Find the top 5 processes by CPU and tell me what they do" -Provider Anthropic
+$r.Result | Format-Table   # real [Process] objects, not text
 
 # Spawn a parallel swarm from one sentence
 Invoke-LLMSwarm "Security audit: open ports, running services, recent event log errors" -Provider Anthropic
@@ -301,7 +321,7 @@ Inside `Enter-LLMChat`, type `/help` for the full list. Highlights:
 | Cmdlet | Description |
 |---|---|
 | `Invoke-LLM` | Single/batch completions. Pipeline-friendly. |
-| `Invoke-LLMAgent` | Agentic loop — dedicated Runspace, `$refs` object registry, stream capture. |
+| `Invoke-LLMAgent` | Agentic loop — dedicated Runspace, native objects returned on `.Result`. |
 | `Invoke-LLMSwarm` | Decompose → RunspacePool DAG dispatch → synthesize. Native object passing between workers. |
 | `New-LLMChat` | Create a stateful multi-turn chat session. |
 | `Send-LLMMessage` | Send one turn inside a chat session. |
