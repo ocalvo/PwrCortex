@@ -62,3 +62,49 @@ $chat | Send-LLMMessage "List loaded modules with a claude.md"
 Any PowerShell module can include a `claude.md` file in its `ModuleBase` directory.
 PwrCortex discovers these automatically and injects their content into system prompts,
 giving the LLM a precise understanding of what each module does and how to use it.
+
+## Commit and PR Conventions (release-please)
+
+This repository uses [release-please](https://github.com/googleapis/release-please) to
+automate versioning and changelog generation. **Every PR title and every squash-merge
+commit message MUST follow [Conventional Commits](https://www.conventionalcommits.org/).**
+
+### Format
+
+```
+<type>(<optional scope>): <short description>
+```
+
+### Allowed types
+
+| Type | When to use | Bumps |
+|---|---|---|
+| `feat` | New feature, new cmdlet, new parameter | minor |
+| `fix` | Bug fix, encoding fix, parse-error fix | patch |
+| `docs` | Documentation-only changes (README, CLAUDE.md, help) | — |
+| `chore` | CI, build, deps, tooling, formatting — no user-visible change | — |
+| `refactor` | Code restructuring with no behavior change | — |
+| `test` | Adding or updating tests | — |
+| `ci` | Changes to GitHub Actions workflows | — |
+| `perf` | Performance improvement | patch |
+
+Append `!` after the type for breaking changes: `feat!: rename Invoke-LLM to Submit-LLM`.
+
+### Examples
+
+```
+feat: add -Timeout parameter to Invoke-LLMAgent
+fix: restore box-drawing glyphs lost to double-encoding
+docs: expand README with swarm orchestration details
+chore: add release-please and PSGallery publish workflows
+ci: add Pester test workflow
+feat!: rename Get-LLMEnvironment to Get-LLMSessionSnapshot
+```
+
+### Rules
+
+- Use **imperative mood** ("add", "fix", "remove" — not "added", "fixes", "removed").
+- Keep the first line under 72 characters.
+- Do **not** use generic messages like "update files" or "misc changes".
+- If a PR contains multiple logical changes, split them into separate PRs so each
+  gets its own changelog entry.
