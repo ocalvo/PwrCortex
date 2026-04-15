@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ocalvo/PwrCortex/compare/v0.3.0...v0.4.0) (2026-04-15)
+
+
+### Features
+
+* dedicated agent runspace with object registry and stream capture ([#13](https://github.com/ocalvo/PwrCortex/issues/13)) ([f522da0](https://github.com/ocalvo/PwrCortex/commit/f522da01dfd0c6309cd443887daa3044b1d56127))
+
 ## [0.3.0](https://github.com/ocalvo/PwrCortex/compare/v0.2.1...v0.3.0) (2026-04-15)
 
 
