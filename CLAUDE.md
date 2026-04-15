@@ -63,34 +63,35 @@ Any PowerShell module can include a `claude.md` file in its `ModuleBase` directo
 PwrCortex discovers these automatically and injects their content into system prompts,
 giving the LLM a precise understanding of what each module does and how to use it.
 
-## Commit and PR Conventions (release-please)
+## Branch and PR Policy (release-please)
 
-This repository uses [release-please](https://github.com/googleapis/release-please) to
-automate versioning and changelog generation. **Every PR title and every squash-merge
-commit message MUST follow [Conventional Commits](https://www.conventionalcommits.org/).**
+**Never commit directly to `main`.** All changes must go through a feature branch and pull request. This repo uses [release-please](https://github.com/googleapis/release-please) to automate versioning and changelog generation from merged PR titles.
 
-### Format
+1. `git checkout -b <short-slug>` — e.g. `feat/llm-timeout`, `fix/swarm-encoding`.
+2. Commit on that branch.
+3. `gh pr create --title "<type>: <description>" --body "..."` — use `--base main`.
+4. Squash-merge; GitHub uses the PR title as the commit subject, which release-please parses.
+5. Release-please opens/updates a release PR bumping `PwrCortex.psd1` and `CHANGELOG.md`. Merge that to publish.
+
+**PR titles must follow [Conventional Commits](https://www.conventionalcommits.org/):**
 
 ```
-<type>(<optional scope>): <short description>
+<type>[optional scope][!]: <short description>
 ```
 
-### Allowed types
+| Type | Version bump | Use for |
+|------|--------------|---------|
+| `feat` | minor (`1.2.3` → `1.3.0`) | New features, new cmdlets, new parameters |
+| `fix` | patch (`1.2.3` → `1.2.4`) | Bug fixes, encoding fixes, parse-error fixes |
+| `feat!` / `fix!` / `BREAKING CHANGE:` footer | major (`1.2.3` → `2.0.0`) | Breaking API or behavior changes |
+| `perf` | patch | Performance improvements |
+| `refactor` | patch | Internal restructuring, no behavior change |
+| `docs` | no release | Documentation-only (README, CLAUDE.md, help) |
+| `chore` | no release | Housekeeping, deps, formatting |
+| `ci` | no release | CI/CD config |
+| `test` | no release | Test-only changes |
 
-| Type | When to use | Bumps |
-|---|---|---|
-| `feat` | New feature, new cmdlet, new parameter | minor |
-| `fix` | Bug fix, encoding fix, parse-error fix | patch |
-| `docs` | Documentation-only changes (README, CLAUDE.md, help) | — |
-| `chore` | CI, build, deps, tooling, formatting — no user-visible change | — |
-| `refactor` | Code restructuring with no behavior change | — |
-| `test` | Adding or updating tests | — |
-| `ci` | Changes to GitHub Actions workflows | — |
-| `perf` | Performance improvement | patch |
-
-Append `!` after the type for breaking changes: `feat!: rename Invoke-LLM to Submit-LLM`.
-
-### Examples
+Examples:
 
 ```
 feat: add -Timeout parameter to Invoke-LLMAgent
@@ -101,10 +102,9 @@ ci: add Pester test workflow
 feat!: rename Get-LLMEnvironment to Get-LLMSessionSnapshot
 ```
 
-### Rules
-
-- Use **imperative mood** ("add", "fix", "remove" — not "added", "fixes", "removed").
-- Keep the first line under 72 characters.
-- Do **not** use generic messages like "update files" or "misc changes".
-- If a PR contains multiple logical changes, split them into separate PRs so each
-  gets its own changelog entry.
+Rules:
+- **Imperative mood** ("add", "fix", "remove" — not "added", "fixes").
+- Under 72 characters.
+- No generic messages ("update files", "misc changes").
+- Split unrelated changes into separate PRs.
+- If a PR title doesn't match the grammar, release-please silently ignores it.
