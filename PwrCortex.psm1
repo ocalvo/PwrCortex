@@ -1270,9 +1270,10 @@ function Get-LLMProviders {
 #  DependsOn, forming a DAG — the dispatcher releases each task only once all
 #  its dependencies have finished successfully.
 #
-#  Thread communication uses a [ConcurrentDictionary] shared across runspaces:
-#    $script:SwarmShared["result::<taskId>"] = <json>    set by workers
-#    $script:SwarmShared["status::<taskId>"] = <status>  running|done|failed
+#  Thread communication uses a [ConcurrentDictionary[string,object]] shared
+#  across runspaces (same process, no serialization boundary):
+#    $script:SwarmShared["result::<taskId>"] = [LLMResponse]  set by workers
+#    $script:SwarmShared["status::<taskId>"] = <status>       running|done|failed
 #
 #  The orchestrator receives all worker results and runs a SYNTHESIS completion
 #  to produce a final coherent answer.
@@ -1288,7 +1289,7 @@ function Get-LLMProviders {
 #    .TotalSec      double
 #    .StartedAt     datetime
 
-$script:SwarmShared = [System.Collections.Concurrent.ConcurrentDictionary[string,string]]::new()
+$script:SwarmShared = [System.Collections.Concurrent.ConcurrentDictionary[string,object]]::new()
 
 # ── Render helpers (swarm-specific) ──────────────────────────────────────────
 
@@ -1379,7 +1380,7 @@ Goal: $Goal
     }
 }
 
-# ── Worker scriptblock — runs inside each ThreadJob ──────────────────────────
+# ── Worker scriptblock — runs inside each RunspacePool runspace ───────────────
 
 $script:WorkerBlock = {
     param(
@@ -1387,34 +1388,43 @@ $script:WorkerBlock = {
         [string]$TaskPrompt,
         [string]$Provider,
         [string]$Model,
-        [string]$ModulePath,
-        [string]$AnthropicKey,
-        [string]$OpenAIKey,
-        [System.Collections.Concurrent.ConcurrentDictionary[string,string]]$Shared
+        [System.Collections.Concurrent.ConcurrentDictionary[string,object]]$Shared
     )
-
-    # Set keys in this runspace
-    $env:ANTHROPIC_API_KEY = $AnthropicKey
-    $env:OPENAI_API_KEY    = $OpenAIKey
-
-    Import-Module $ModulePath -Force -ErrorAction Stop
 
     try {
         $Shared["status::$TaskId"] = 'running'
         $resp = Invoke-LLMAgent -Prompt $TaskPrompt -Provider $Provider -Model $Model -Quiet
-        $out  = [PSCustomObject]@{
-            TaskId       = $TaskId
-            Content      = $resp.Content
-            TotalTokens  = $resp.TotalTokens
-            ElapsedSec   = $resp.ElapsedSec
-            ToolCallCount= $resp.ToolCalls.Count
-        } | ConvertTo-Json -Compress -Depth 4
-        $Shared["result::$TaskId"]  = $out
-        $Shared["status::$TaskId"]  = 'done'
+        $Shared["result::$TaskId"] = $resp
+        $Shared["status::$TaskId"] = 'done'
     } catch {
-        $Shared["result::$TaskId"]  = "{`"error`":`"$($_.ToString() -replace '"','\"')`"}"
-        $Shared["status::$TaskId"]  = 'failed'
+        $Shared["result::$TaskId"] = $_.ToString()
+        $Shared["status::$TaskId"] = 'failed'
     }
+}
+
+# ── RunspacePool factory — clones the user's session for parallel workers ─────
+
+function script:New-SwarmRunspacePool {
+    param([int]$MaxRunspaces = 4)
+
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+
+    # Import all currently loaded modules so workers inherit the full session context
+    foreach ($mod in (Get-Module)) {
+        $iss.ImportPSModule($mod.Name)
+    }
+
+    # Propagate environment variables (API keys, LLM config, build vars, etc.)
+    foreach ($entry in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        $iss.EnvironmentVariables.Add(
+            [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+                $entry.Key, $entry.Value, ''))
+    }
+
+    $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(
+        1, $MaxRunspaces, $iss, $Host)
+    $pool.Open()
+    $pool
 }
 
 # ── DAG dispatcher ────────────────────────────────────────────────────────────
@@ -1424,13 +1434,14 @@ function script:Invoke-SwarmDispatcher {
         [PSCustomObject[]]$Tasks,
         [string]$Provider,
         [string]$Model,
-        [string]$ModulePath,
-        [string]$AnthropicKey,
-        [string]$OpenAIKey,
-        [System.Collections.Concurrent.ConcurrentDictionary[string,string]]$Shared,
+        [System.Collections.Concurrent.ConcurrentDictionary[string,object]]$Shared,
+        [int]$MaxRunspaces = 4,
         [int]$PollMs = 400,
         [int]$TimeoutSec = 300
     )
+
+    # Create RunspacePool from the current session
+    $pool = script:New-SwarmRunspacePool -MaxRunspaces $MaxRunspaces
 
     # Build mutable task state table
     $state = @{}
@@ -1441,7 +1452,8 @@ function script:Invoke-SwarmDispatcher {
             Prompt     = $t.prompt
             DependsOn  = @($t.dependsOn)
             Status     = 'pending'   # pending | waiting | running | done | failed | skipped
-            Job        = $null
+            Pipeline   = $null       # [PowerShell] instance
+            AsyncResult= $null       # IAsyncResult from BeginInvoke
             StartedAt  = $null
             ElapsedSec = 0.0
             Result     = $null
@@ -1456,89 +1468,119 @@ function script:Invoke-SwarmDispatcher {
     foreach ($t in $state.Values) { script:Write-SwarmTaskLine -Task $t }
     Write-Host ""
 
-    do {
-        $anyProgress = $false
+    try {
+        do {
+            $anyProgress = $false
 
-        foreach ($id in $allIds) {
-            $t = $state[$id]
-            if ($t.Status -notin 'pending','waiting') { continue }
+            foreach ($id in $allIds) {
+                $t = $state[$id]
+                if ($t.Status -notin 'pending','waiting') { continue }
 
-            # Check if any dependency failed → skip this task
-            $depFailed = @($t.DependsOn | Where-Object { $state[$_].Status -eq 'failed' -or $state[$_].Status -eq 'skipped' })
-            if ($depFailed.Count -gt 0) {
-                $t.Status = 'skipped'
-                $t.Error  = "Skipped: dependency $($depFailed -join ', ') failed"
+                # Check if any dependency failed → skip this task
+                $depFailed = @($t.DependsOn | Where-Object { $state[$_].Status -eq 'failed' -or $state[$_].Status -eq 'skipped' })
+                if ($depFailed.Count -gt 0) {
+                    $t.Status = 'skipped'
+                    $t.Error  = "Skipped: dependency $($depFailed -join ', ') failed"
+                    script:Write-SwarmTaskLine -Task $t
+                    $anyProgress = $true
+                    continue
+                }
+
+                # Check all deps done
+                $depsReady = ($t.DependsOn.Count -eq 0) -or
+                    ($t.DependsOn | ForEach-Object { $state[$_].Status } | Where-Object { $_ -ne 'done' } | Measure-Object).Count -eq 0
+
+                if (-not $depsReady) {
+                    if ($t.Status -ne 'waiting') { $t.Status = 'waiting'; script:Write-SwarmTaskLine -Task $t }
+                    continue
+                }
+
+                # Substitute {{result::<id>}} placeholders with upstream content
+                $prompt = $t.Prompt
+                foreach ($depId in $t.DependsOn) {
+                    $depObj = $Shared["result::$depId"]
+                    if ($depObj -and $depObj.Content) {
+                        $prompt = $prompt -replace "{{result::$depId}}", $depObj.Content
+                    }
+                }
+
+                # Launch worker on RunspacePool
+                $t.Status    = 'running'
+                $t.StartedAt = [datetime]::UtcNow
+                $ps = [PowerShell]::Create()
+                $ps.RunspacePool = $pool
+                $null = $ps.AddScript($script:WorkerBlock).
+                    AddArgument($id).
+                    AddArgument($prompt).
+                    AddArgument($Provider).
+                    AddArgument($Model).
+                    AddArgument($Shared)
+                $t.Pipeline    = $ps
+                $t.AsyncResult = $ps.BeginInvoke()
+
                 script:Write-SwarmTaskLine -Task $t
                 $anyProgress = $true
-                continue
             }
 
-            # Check all deps done
-            $depsReady = ($t.DependsOn.Count -eq 0) -or
-                ($t.DependsOn | ForEach-Object { $state[$_].Status } | Where-Object { $_ -ne 'done' } | Measure-Object).Count -eq 0
+            # Harvest completed pipelines
+            foreach ($id in $allIds) {
+                $t = $state[$id]
+                if ($t.Status -ne 'running' -or $null -eq $t.Pipeline) { continue }
 
-            if (-not $depsReady) {
-                if ($t.Status -ne 'waiting') { $t.Status = 'waiting'; script:Write-SwarmTaskLine -Task $t }
-                continue
-            }
+                if ($t.AsyncResult.IsCompleted) {
+                    try { $t.Pipeline.EndInvoke($t.AsyncResult) } catch {}
+                    $t.ElapsedSec = ([datetime]::UtcNow - $t.StartedAt).TotalSeconds
+                    $t.Status     = $Shared["status::$id"] ?? 'failed'
+                    $t.Result     = $Shared["result::$id"]
+                    if ($t.Status -eq 'failed' -and $t.Result -is [string]) {
+                        $t.Error = $t.Result
+                    }
 
-            # Substitute {{result::<id>}} placeholders from shared results
-            $prompt = $t.Prompt
-            foreach ($depId in $t.DependsOn) {
-                $depResult = $Shared["result::$depId"]
-                if ($depResult) {
-                    $prompt = $prompt -replace "{{result::$depId}}", $depResult
+                    $t.Pipeline.Dispose()
+                    $t.Pipeline    = $null
+                    $t.AsyncResult = $null
+
+                    script:Write-SwarmTaskLine -Task $t
+                    $anyProgress = $true
                 }
             }
 
-            # Launch worker job
-            $t.Status    = 'running'
-            $t.StartedAt = [datetime]::UtcNow
-            $t.Job = Start-ThreadJob -ScriptBlock $script:WorkerBlock -ArgumentList @(
-                $id, $prompt, $Provider, $Model, $ModulePath,
-                $AnthropicKey, $OpenAIKey, $Shared
-            ) -StreamingHost $Host
+            $allDone = ($state.Values | Where-Object { $_.Status -notin 'done','failed','skipped' } | Measure-Object).Count -eq 0
+            if (-not $allDone) { Start-Sleep -Milliseconds $PollMs }
 
-            script:Write-SwarmTaskLine -Task $t
-            $anyProgress = $true
-        }
-
-        # Harvest completed jobs
-        foreach ($id in $allIds) {
-            $t = $state[$id]
-            if ($t.Status -ne 'running' -or $null -eq $t.Job) { continue }
-
-            $jobStatus = $Shared["status::$id"]
-            if ($jobStatus -in 'done','failed') {
-                $t.ElapsedSec = ([datetime]::UtcNow - $t.StartedAt).TotalSeconds
-                $t.Status     = $jobStatus
-                $rawResult    = $Shared["result::$id"]
-
-                try {
-                    $parsed   = $rawResult | ConvertFrom-Json
-                    $t.Result = $parsed
-                    if ($parsed.error) { $t.Error = $parsed.error }
-                } catch { $t.Result = $rawResult }
-
-                # Clean up job
-                $t.Job | Remove-Job -Force -ErrorAction SilentlyContinue
-                $t.Job = $null
-
-                script:Write-SwarmTaskLine -Task $t
-                $anyProgress = $true
+            # Timeout guard
+            if (([datetime]::UtcNow - $startTime).TotalSeconds -gt $TimeoutSec) {
+                script:Write-Status "Swarm timed out after ${TimeoutSec}s" 'warn'
+                # Stop and dispose all running pipelines
+                foreach ($id in $allIds) {
+                    $t = $state[$id]
+                    if ($t.Pipeline) {
+                        $t.Pipeline.Stop()
+                        $t.Pipeline.Dispose()
+                        $t.Pipeline    = $null
+                        $t.AsyncResult = $null
+                        if ($t.Status -eq 'running') {
+                            $t.Status    = 'failed'
+                            $t.Error     = "Timed out after ${TimeoutSec}s"
+                            $t.ElapsedSec= ([datetime]::UtcNow - $t.StartedAt).TotalSeconds
+                            script:Write-SwarmTaskLine -Task $t
+                        }
+                    }
+                    if ($t.Status -eq 'pending' -or $t.Status -eq 'waiting') {
+                        $t.Status = 'skipped'
+                        $t.Error  = 'Skipped: swarm timed out'
+                        script:Write-SwarmTaskLine -Task $t
+                    }
+                }
+                break
             }
-        }
 
-        $allDone = ($state.Values | Where-Object { $_.Status -notin 'done','failed','skipped' } | Measure-Object).Count -eq 0
-        if (-not $allDone) { Start-Sleep -Milliseconds $PollMs }
-
-        # Timeout guard
-        if (([datetime]::UtcNow - $startTime).TotalSeconds -gt $TimeoutSec) {
-            script:Write-Status "Swarm timed out after ${TimeoutSec}s" 'warn'
-            break
-        }
-
-    } while (-not $allDone)
+        } while (-not $allDone)
+    }
+    finally {
+        $pool.Close()
+        $pool.Dispose()
+    }
 
     return $state.Values
 }
@@ -1549,7 +1591,8 @@ function script:Invoke-OrchestratorSynthesize {
     param([string]$Goal, [PSCustomObject[]]$TaskResults, [string]$Provider, [string]$Model)
 
     $resultBlocks = $TaskResults | ForEach-Object {
-        $content = if ($_.Result -and $_.Result.Content) { $_.Result.Content } else { $_.Error ?? 'no result' }
+        $content = if ($_.Result -is [PSCustomObject] -and $_.Result.Content) { $_.Result.Content }
+                   else { $_.Error ?? 'no result' }
         "<task id=""$($_.Id)"" name=""$($_.Name)"" status=""$($_.Status)"">$content</task>"
     }
 
@@ -1643,11 +1686,6 @@ function Invoke-LLMSwarm {
     begin {
         if (-not $Provider) { $Provider = $env:LLM_DEFAULT_PROVIDER ?? 'Anthropic' }
         if (-not $Model)    { $Model    = $script:Providers[$Provider].DefaultModel }
-        # Locate this module's psm1 so workers can import it
-        $modulePath = $PSCommandPath
-        if (-not $modulePath) { $modulePath = (Get-Module PwrCortex).Path }
-        $anthKey = [System.Environment]::GetEnvironmentVariable('ANTHROPIC_API_KEY') ?? ''
-        $oaiKey  = [System.Environment]::GetEnvironmentVariable('OPENAI_API_KEY')    ?? ''
     }
     process {
         $swStart = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1669,11 +1707,11 @@ function Invoke-LLMSwarm {
         $script:SwarmShared.Clear()
         $finishedTasks = script:Invoke-SwarmDispatcher `
             -Tasks $tasks -Provider $Provider -Model $Model `
-            -ModulePath $modulePath -AnthropicKey $anthKey -OpenAIKey $oaiKey `
-            -Shared $script:SwarmShared -TimeoutSec $TimeoutSec
+            -Shared $script:SwarmShared -MaxRunspaces ([Math]::Min($tasks.Count, 4)) `
+            -TimeoutSec $TimeoutSec
 
         $finishedTasks | ForEach-Object {
-            if ($_.Result -and ($_.Result.PSObject.Properties.Name -contains 'TotalTokens')) {
+            if ($_.Result -is [PSCustomObject] -and $_.Result.TotalTokens) {
                 $totalTokens += $_.Result.TotalTokens
             }
         }
