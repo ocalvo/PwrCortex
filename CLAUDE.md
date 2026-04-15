@@ -14,8 +14,8 @@ backed by Anthropic (Claude) or OpenAI (GPT) APIs.
 | Cmdlet | Use When |
 |---|---|
 | `Invoke-LLM` | You need a single completion or want to pipe multiple prompts through. |
-| `Invoke-LLMAgent` | The task requires calling real PowerShell commands to gather data or act. The LLM gets an `invoke_powershell` tool. |
-| `Invoke-LLMSwarm` | The goal decomposes into parallel sub-tasks. Workers run as ThreadJobs with DAG-based dependencies. |
+| `Invoke-LLMAgent` | The task requires calling real PowerShell commands. Runs in a dedicated Runspace with a `$refs` object registry — results stay as live .NET objects, never serialized to JSON. |
+| `Invoke-LLMSwarm` | The goal decomposes into parallel sub-tasks. Workers run in a RunspacePool with DAG-based dependencies and in-memory object passing. |
 | `New-LLMChat` | You need a stateful multi-turn conversation. Pair with `Send-LLMMessage` or `Enter-LLMChat`. |
 | `Send-LLMMessage` | Send a single turn inside an existing `[LLMChat]` session. |
 | `Enter-LLMChat` | Launch an interactive REPL for a chat session. Supports `/help`, `/expand`, `/swarm`, `/run`, and more. |
