@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/ocalvo/PwrCortex/compare/v0.5.0...v0.6.0) (2026-04-15)
+
+
+### Features
+
+* add Write-Verbose/Warning/Error instrumentation and aliases ([#18](https://github.com/ocalvo/PwrCortex/issues/18)) ([beb4cf0](https://github.com/ocalvo/PwrCortex/commit/beb4cf06bb28a9e4b93c422b0773bda55a050765))
+
 ## [0.5.0](https://github.com/ocalvo/PwrCortex/compare/v0.4.0...v0.5.0) (2026-04-15)
 
 
