@@ -1,7 +1,7 @@
 @{
     RootModule        = 'PwrCortex.psm1'
     ModuleVersion     = '0.1.0'
-    GUID              = 'a3e28c45-7b2d-4f8e-9c1a-6d5e4f3b2a10'
+    GUID              = '8d813073-685a-4374-9a02-14bde0b8e9e9'
     Author            = 'Oscar Calvo'
     CompanyName       = 'PwrCortex'
     Copyright         = '(c) Oscar Calvo. All rights reserved.'
