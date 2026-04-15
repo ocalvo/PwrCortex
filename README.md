@@ -111,6 +111,18 @@ Every token you don't send is money you don't spend. The `$refs` architecture do
 | Claude Opus per call | ~$1.10 | ~$0.025 | **~97%** |
 | 100 Opus calls/day | ~$3,300/mo | ~$75/mo | **$3,200/mo saved** |
 
+**Head-to-head: PwrCortex vs Claude Code**
+
+Claude Code is an exceptional general-purpose coding agent — but it uses Opus (the most expensive model), maintains a massive system prompt, and passes every tool result as text through the full conversation context. For targeted PowerShell automation tasks, the difference is stark:
+
+| Task | Claude Code (Opus, text) | PwrCortex (Sonnet, `$refs`) | Ratio |
+|---|---|---|---|
+| "Top 5 processes by memory" | ~$0.40 (20K+ tokens, multi-turn) | ~$0.005 (2,700 tokens, 1 turn) | **80x** |
+| "Build, get errors, fix top 3" | ~$3–5 (build log as text) | ~$0.08 (structured `[BuildError]` objects) | **40–60x** |
+| 100 ops tasks / day | ~$200–500/mo | ~$5–15/mo | **30–40x** |
+
+Claude Code wins when you need to navigate an unfamiliar codebase, plan a refactor, or reason about architecture. PwrCortex wins when the tools already exist as PowerShell modules — because it doesn't re-discover what's already structured.
+
 And these savings **multiply with every PowerShell module in the ecosystem**.
 
 Consider [**PwrDev**](https://github.com/ocalvo/PwrDev) — a build and deployment module for C++ and .NET projects. Its `Get-BuildErrors` cmdlet returns structured `[BuildError]` objects with `File`, `Line`, `Column`, `Message`, `Severity` properties. In Claude Code or any text-based agent, a build log is a wall of unstructured text that burns thousands of tokens. In PwrCortex:
