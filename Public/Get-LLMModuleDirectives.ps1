@@ -26,10 +26,12 @@ function Get-LLMModuleDirectives {
     param([switch]$ListAvailable)
 
     $modules = if ($ListAvailable) { Get-Module -ListAvailable } else { Get-Module }
+    Write-Verbose "Scanning $(@($modules).Count) module(s) for claude.md directives"
 
     foreach ($mod in $modules) {
         $path = Join-Path $mod.ModuleBase 'claude.md'
         if (Test-Path $path) {
+            Write-Debug "Found directive: $($mod.Name) v$($mod.Version) at $path"
             [PSCustomObject]@{
                 PSTypeName = 'LLMModuleDirective'
                 Module     = $mod.Name

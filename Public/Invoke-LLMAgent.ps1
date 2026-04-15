@@ -76,9 +76,13 @@ function Invoke-LLMAgent {
         if (-not $Model)    { $Model    = $script:Providers[$Provider].DefaultModel }
     }
     process {
+        script:Push-Preferences
+        $script:VerbosePreference = $VerbosePreference
+        $script:DebugPreference   = $DebugPreference
         $agentSession = script:New-AgentSession
         try {
 
+        Write-Verbose "Invoke-LLMAgent: $Provider/$Model, maxTurns=$MaxTurns, toolTimeout=${ToolTimeoutSec}s"
         $sys      = script:Build-SystemPrompt -UserSystemPrompt $SystemPrompt -IncludeEnv $true
         $messages = [System.Collections.Generic.List[object]]::new()
         $messages.Add(@{role='user';content=$Prompt})
@@ -101,6 +105,7 @@ function Invoke-LLMAgent {
             $r        = $raw.Response
             $totalSec += $raw.ElapsedSec
             $turns++
+            Write-Verbose "Agent turn ${turns}: $([math]::Round($raw.ElapsedSec,2))s"
 
             switch ($Provider) {
                 'Anthropic' {
@@ -171,6 +176,10 @@ function Invoke-LLMAgent {
 
         } while ($stopReason -eq 'tool_use' -and $turns -lt $MaxTurns)
 
+        if ($stopReason -eq 'tool_use' -and $turns -ge $MaxTurns) {
+            Write-Warning "Agent reached MaxTurns limit ($MaxTurns) — stopping with pending tool calls"
+        }
+
         $result = $null
         if ($agentSession.Refs.Count -gt 0) {
             $result = @(foreach ($key in ($agentSession.Refs.Keys | Sort-Object)) {
@@ -189,8 +198,12 @@ function Invoke-LLMAgent {
             script:Write-Status "Agent completed · $turns turn(s) · $($allToolCalls.Count) tool call(s) · $($totalIn+$totalOut) tokens" 'ok'
             Write-Host ""
         }
+        Write-Verbose "Agent done: $turns turn(s), $($allToolCalls.Count) tool call(s), $($totalIn+$totalOut) tokens, $($agentSession.Refs.Count) ref(s)"
         $resp
 
-        } finally { script:Close-AgentSession $agentSession }
+        } finally {
+            script:Close-AgentSession $agentSession
+            script:Pop-Preferences
+        }
     }
 }

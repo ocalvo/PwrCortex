@@ -69,6 +69,11 @@ $ErrorActionPreference = 'Stop'
 Get-ChildItem "$PSScriptRoot/Public/*.ps1" | ForEach-Object { . $_.FullName }
 
 # ── Exports ──────────────────────────────────────────────────────────────────
+New-Alias -Name 'swarm'  -Value 'Invoke-LLMSwarm' -Scope Script
+New-Alias -Name 'agent'  -Value 'Invoke-LLMAgent' -Scope Script
+New-Alias -Name 'llm'    -Value 'Invoke-LLM'      -Scope Script
+New-Alias -Name 'chat'   -Value 'Enter-LLMChat'   -Scope Script
+
 Export-ModuleMember -Function @(
     'Invoke-LLM'
     'Invoke-LLMAgent'
@@ -80,4 +85,4 @@ Export-ModuleMember -Function @(
     'Get-LLMProviders'
     'Get-LLMEnvironment'
     'Get-LLMModuleDirectives'
-)
+) -Alias @('swarm', 'agent', 'llm', 'chat')

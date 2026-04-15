@@ -11,6 +11,9 @@ function Get-LLMProviders {
         $cfg    = $script:Providers[$name]
         $keySet = -not [string]::IsNullOrWhiteSpace(
             [System.Environment]::GetEnvironmentVariable($cfg.EnvKeyName))
+        if (-not $keySet) {
+            Write-Warning "$name provider: $($cfg.EnvKeyName) is not set"
+        }
         $dot    = if ($keySet) { "$($c.Green)●$($c.Reset)" } else { "$($c.Red)○$($c.Reset)" }
         Write-Host "  $dot $($c.Amber)$($name.PadRight(12))$($c.Reset)$($c.Silver)model:$($c.Reset) $($cfg.DefaultModel.PadRight(34))$($c.Silver)env:$($c.Reset) $($cfg.EnvKeyName)"
         [PSCustomObject]@{

@@ -67,6 +67,11 @@ function Invoke-LLMSwarm {
         if (-not $Model)    { $Model    = $script:Providers[$Provider].DefaultModel }
     }
     process {
+        script:Push-Preferences
+        $script:VerbosePreference = $VerbosePreference
+        $script:DebugPreference   = $DebugPreference
+        try {
+        Write-Verbose "Invoke-LLMSwarm: $Provider/$Model, maxTasks=$MaxTasks, timeout=${TimeoutSec}s"
         $swStart = [System.Diagnostics.Stopwatch]::StartNew()
         $totalTokens = 0
 
@@ -125,6 +130,16 @@ function Invoke-LLMSwarm {
 
         if (-not $Quiet) { script:Write-SwarmSummary -Result $result }
 
+        $done   = @($finishedTasks | Where-Object Status -eq 'done').Count
+        $failed = @($finishedTasks | Where-Object Status -eq 'failed').Count
+        if ($failed -gt 0) {
+            Write-Warning "Swarm completed with $failed failed task(s) out of $(@($finishedTasks).Count)"
+        }
+        Write-Verbose "Swarm complete: $done done, $failed failed, $totalTokens tokens, $([math]::Round($swStart.Elapsed.TotalSeconds,2))s"
         return $result
+
+        } finally {
+            script:Pop-Preferences
+        }
     }
 }

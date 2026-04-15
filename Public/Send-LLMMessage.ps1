@@ -25,6 +25,7 @@ function Send-LLMMessage {
         [switch]$Quiet
     )
     process {
+        Write-Verbose "Send-LLMMessage: chat=$($Chat.Id), turn=$($Chat.TurnCount + 1), agentic=$($Chat.Agentic)"
         if ($Chat.Agentic) {
             $resp = Invoke-LLMAgent -Prompt $Message -Provider $Chat.Provider -Model $Chat.Model `
                 -SystemPrompt $Chat.SystemPrompt -MaxTokens $Chat.MaxTokens -Quiet:$Quiet
