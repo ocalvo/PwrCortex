@@ -9,11 +9,15 @@ Install-Module PwrCortex
 
 ## Why this exists
 
-Every major LLM agent framework — LangGraph, CrewAI, AutoGen, OpenAI Swarm — was built in Python, for Python developers. Even the AI-native coding tools — Claude Code, Cursor, GitHub Copilot — treat PowerShell as a black-box terminal they shell out to. They serialize everything to text, burn tokens re-parsing it, and have zero access to the live .NET objects sitting right there in memory.
+Every LLM agent framework treats shells the same way: run a command, capture stdout as a string, shove it into the context window. Python frameworks (LangChain, CrewAI, AutoGen) serialize to JSON. Bash-based agents get raw text. AI coding tools (Claude Code, Cursor, Copilot) shell out and parse the output.
 
-The people who actually run infrastructure — sysadmins, DevOps engineers, platform teams — live in PowerShell. They have thousands of modules, years of scripts, and an entire automation surface that no external framework can reach natively.
+They all make the same mistake: **they treat PowerShell like bash.**
 
-**PwrCortex is the first LLM agent framework built *for* PowerShell, not bolted onto it.**
+Bash commands return text. PowerShell commands return **.NET objects** — with properties, methods, types, and pipeline semantics. When you run `Get-Process`, you don't get a string — you get `[System.Diagnostics.Process]` instances with `.WorkingSet64`, `.CPU`, `.Kill()`. When you run `Get-BuildErrors`, you get `[BuildError]` objects with `.File`, `.Line`, `.Severity`. None of that survives serialization to JSON or text.
+
+Every existing framework throws away this structure, pays to serialize it, pays again to stuff it into the context window, and pays a third time when the LLM hallucinates properties that existed in the original object but got lost in translation.
+
+**PwrCortex is the first LLM agent framework that understands PowerShell is not a text shell.** It keeps objects alive in memory, gives the LLM a compact summary, and lets subsequent tool calls operate on the real .NET objects — not a string representation of them.
 
 The shell is not a sandbox. The shell is the runtime.
 
