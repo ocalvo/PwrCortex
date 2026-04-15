@@ -27,7 +27,8 @@ function script:New-ResponseObj {
         [string]$Provider, [string]$Model, [string]$Content,
         [int]$InputTokens, [int]$OutputTokens, [string]$StopReason,
         [string]$ResponseId, [double]$ElapsedSec, $Raw,
-        [PSCustomObject[]]$ToolCalls = @()
+        [PSCustomObject[]]$ToolCalls = @(),
+        $Result = $null
     )
     $steps   = script:Parse-Steps $Content
     $summary = if ($Content.Length -gt 200) { $Content.Substring(0,197)+'...' } else { $Content }
@@ -46,6 +47,7 @@ function script:New-ResponseObj {
         Timestamp    = [datetime]::UtcNow
         Steps        = $steps
         ToolCalls    = $ToolCalls
+        Result       = $Result
         Raw          = $Raw
     }
     $dds = [System.Management.Automation.PSPropertySet]::new(
