@@ -13,7 +13,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
+      releases_created: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
@@ -24,3 +24,29 @@ jobs:
           # "Allow GitHub Actions to create and approve pull requests" is enabled
           # (Settings → Actions → General → Workflow permissions).
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+  publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify manifest version matches release tag
+        shell: pwsh
+        run: |
+          $tag = '${{ needs.release-please.outputs.tag_name }}' -replace '^v',''
+          $manifest = Test-ModuleManifest -Path ./PwrCortex.psd1 -ErrorAction Stop
+          Write-Host "Release tag: $tag"
+          Write-Host "Manifest version: $($manifest.Version)"
+          if ($manifest.Version.ToString() -ne $tag) {
+            throw "Version mismatch: manifest=$($manifest.Version) tag=$tag"
+          }
+
+      - name: Publish to PowerShell Gallery
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+        run: |
+          Publish-Module -Path ./ -NuGetApiKey $env:NUGET_API_KEY -Repository PSGallery -Verbose
