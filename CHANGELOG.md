@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/ocalvo/PwrCortex/compare/v0.7.0...v0.8.0) (2026-04-16)
+
+
+### Features
+
+* auto-store results in semantic globals with session history ([#25](https://github.com/ocalvo/PwrCortex/issues/25)) ([7d8642b](https://github.com/ocalvo/PwrCortex/commit/7d8642b40e43a0e019156c1ed0925462af4aa121))
+* inject global-scope variables into agent and swarm runspaces ([#23](https://github.com/ocalvo/PwrCortex/issues/23)) ([51df438](https://github.com/ocalvo/PwrCortex/commit/51df4382240bf79c4e3ab617feaec2f75895fa67))
+
 ## [0.7.0](https://github.com/ocalvo/PwrCortex/compare/v0.6.0...v0.7.0) (2026-04-16)
 
 
