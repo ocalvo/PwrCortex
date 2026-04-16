@@ -138,6 +138,9 @@ function Invoke-LLMSwarm {
         $result.PSObject.Members.Add(
             [System.Management.Automation.PSMemberSet]::new('PSStandardMembers',[System.Management.Automation.PSMemberInfo[]]@($dds)))
 
+        $globalName = script:Save-GlobalResult -Type 'swarm' -Result $result
+        $result | Add-Member -NotePropertyName GlobalName -NotePropertyValue $globalName
+
         if (-not $Quiet) { script:Write-SwarmSummary -Result $result }
 
         $done   = @($finishedTasks | Where-Object Status -eq 'done').Count

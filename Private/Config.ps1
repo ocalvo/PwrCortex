@@ -65,6 +65,22 @@ function script:Pop-Preferences {
     $script:WarningPreference = $script:_savedWarning
 }
 
+# ── Global result auto-store ──────────────────────────────────────────────────
+# Every agent/swarm response is stored in $global:llm_<type>_<N> so the user's
+# session accumulates results that are available to subsequent calls.
+
+$script:GlobalResultCounter = @{ agent = 0; swarm = 0 }
+
+function script:Save-GlobalResult {
+    param([string]$Type, [object]$Result)
+    $script:GlobalResultCounter[$Type]++
+    $n    = $script:GlobalResultCounter[$Type]
+    $name = "llm_${Type}_${n}"
+    Set-Variable -Name $name -Value $Result -Scope Global
+    Write-Verbose "Result stored in `$global:$name"
+    $name
+}
+
 # Verbs whose presence in an expression requires user confirmation
 $script:DestructivePattern = '^(Remove|Stop|Kill|Format|Clear|Reset|Disable|Uninstall|Delete|Erase|Purge|Drop|Revoke|Deny)-'
 

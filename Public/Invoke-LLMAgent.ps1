@@ -205,6 +205,9 @@ function Invoke-LLMAgent {
             -ResponseId '' -ElapsedSec $totalSec -Raw $null -ToolCalls $allToolCalls.ToArray() `
             -Result $result
 
+        $globalName = script:Save-GlobalResult -Type 'agent' -Result $resp
+        $resp | Add-Member -NotePropertyName GlobalName -NotePropertyValue $globalName
+
         if (-not $Quiet) {
             script:Write-ResponseBox -Content $finalText -Provider $Provider -Model $Model `
                 -InputTokens $totalIn -OutputTokens $totalOut -StopReason $stopReason `
