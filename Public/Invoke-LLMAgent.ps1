@@ -196,14 +196,19 @@ function Invoke-LLMAgent {
 
         $result = $null
         if ($agentSession.Refs.Count -gt 0) {
-            $result = @(foreach ($key in ($agentSession.Refs.Keys | Sort-Object)) {
+            $all = @(foreach ($key in ($agentSession.Refs.Keys | Sort-Object)) {
                 $agentSession.Refs[$key]
             })
+            $result = if ($all.Count -eq 1) { $all[0] } else { $all }
         }
         $resp = script:New-ResponseObj -Provider $Provider -Model $Model -Content $finalText `
             -InputTokens $totalIn -OutputTokens $totalOut -StopReason $stopReason `
             -ResponseId '' -ElapsedSec $totalSec -Raw $null -ToolCalls $allToolCalls.ToArray() `
             -Result $result
+
+        $globalValue = if ($null -ne $resp.Result) { $resp.Result } else { $resp }
+        $globalName = script:Save-GlobalResult -Type 'agent' -Prompt $Prompt -Result $globalValue
+        $resp | Add-Member -NotePropertyName GlobalName -NotePropertyValue $globalName
 
         if (-not $Quiet) {
             script:Write-ResponseBox -Content $finalText -Provider $Provider -Model $Model `

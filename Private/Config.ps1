@@ -65,13 +65,58 @@ function script:Pop-Preferences {
     $script:WarningPreference = $script:_savedWarning
 }
 
+# ── Global result auto-store ──────────────────────────────────────────────────
+# Every agent/swarm response is stored in $global:llm_<type>_<N> so the user's
+# session accumulates results that are available to subsequent calls.
+
+# Initialize the session-wide result history stack (persists across calls)
+if (-not (Get-Variable -Name 'llm_history' -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:llm_history = [System.Collections.Generic.List[PSCustomObject]]::new()
+}
+
+function script:Save-GlobalResult {
+    param([string]$Type, [string]$Prompt, [object]$Result)
+    # Build a slug from the prompt: keep meaningful words, drop noise
+    $stopWords = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@('the','a','an','is','are','was','were','be','been','being',
+                     'in','on','at','to','for','of','with','and','or','but',
+                     'not','no','do','does','did','have','has','had','will',
+                     'would','could','should','can','may','might','shall',
+                     'this','that','these','those','it','its','my','your',
+                     'all','each','every','what','which','how','when','where',
+                     'who','why','me','i','you','we','they','them','he','she'),
+        [System.StringComparer]::OrdinalIgnoreCase)
+    $words = ($Prompt -replace '[^\w\s]', '' -split '\s+') |
+        Where-Object { $_.Length -gt 1 -and -not $stopWords.Contains($_) } |
+        Select-Object -First 4
+    $slug = ($words -join '_').ToLower() -replace '[^a-z0-9_]', ''
+    if (-not $slug) { $slug = $Type }
+    $name = "llm_${slug}"
+    # Ensure uniqueness by appending a counter if needed
+    if (Get-Variable -Name $name -Scope Global -ErrorAction SilentlyContinue) {
+        $n = 2
+        while (Get-Variable -Name "${name}_${n}" -Scope Global -ErrorAction SilentlyContinue) { $n++ }
+        $name = "${name}_${n}"
+    }
+    Set-Variable -Name $name -Value $Result -Scope Global
+    $global:llm_history.Add([PSCustomObject]@{
+        Index      = $global:llm_history.Count + 1
+        GlobalName = $name
+        Type       = $Type
+        Prompt     = $Prompt
+        Timestamp  = [datetime]::UtcNow
+    })
+    Write-Verbose "Result stored in `$global:$name (history #$($global:llm_history.Count))"
+    $name
+}
+
 # Verbs whose presence in an expression requires user confirmation
 $script:DestructivePattern = '^(Remove|Stop|Kill|Format|Clear|Reset|Disable|Uninstall|Delete|Erase|Purge|Drop|Revoke|Deny)-'
 
 # The single tool definition exposed to all providers
 $script:AgentTool = @{
     name        = 'invoke_powershell'
-    description = 'Execute a PowerShell expression in a live session. Results are stored in $refs[id] for reuse in later calls. All loaded modules and their claude.md directives are available.'
+    description = 'Execute a PowerShell expression in a live session. Results are stored as live .NET objects in $refs[id] for reuse in later calls. The caller receives these objects via .Result — always use this tool to produce your final answer so it contains a typed object, not just text. All loaded modules and their claude.md directives are available.'
     input_schema = @{
         type       = 'object'
         required   = @('expression')

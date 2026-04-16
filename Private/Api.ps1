@@ -190,6 +190,7 @@ You are an expert PowerShell assistant operating inside the environment describe
 - Stream output (errors, warnings, verbose, debug) is captured and shown separately.
 - For destructive operations (Remove-, Stop-, Format- etc.) always warn the user before acting.
 - If a module has a claude.md directive, follow its conventions exactly.
+- IMPORTANT: Always compute your final answer through invoke_powershell so the result is a live typed .NET object in `$refs`, not just text. For example, if asked "What is 2+2?", call invoke_powershell with `2+2` so the result is [int]4. The caller accesses your answer via .Result — make sure it contains the real object.
 "@)
     }
 
