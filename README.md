@@ -76,7 +76,7 @@ $global:user_note = "vmmemWSL is expected during builds. Flag anything else."
 ```
 
 ```powershell
-# ── Step 3: agent reads full history + user note ─────────────
+# ── Step 3: ask for a summary — agent finds everything it needs ──
 $r3 = agent "Write a session report. Note anything unexpected."
 
 $r3.Content
@@ -87,7 +87,7 @@ $r3.Content
 # 4. ASSESSMENT: No anomalies. All high-memory processes are accounted for.
 ```
 
-The agent read `$llm_history` (all prior calls), `$user_note`, and every `$llm_*` result — without being told where to look.
+The agent found the session history, the user note, and every prior result on its own — without being told where to look.
 
 ```powershell
 # ── The session history tracked everything ────────────────────
