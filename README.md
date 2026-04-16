@@ -36,7 +36,7 @@ $r.Result[0].Kill()   # live [Process] object — methods work
 
 ## Demo: context carries across calls
 
-A real session. Each call builds on the last. No wiring — globals and history propagate automatically.
+A real session. Each call builds on the last. No variable names to remember — the agent resolves natural language references automatically.
 
 ```powershell
 # ── Step 1: gather data ──────────────────────────────────────
@@ -61,14 +61,14 @@ $global:memory_threshold_mb = 1000
 ```
 
 ```powershell
-# ── Step 2: agent sees BOTH the prior result AND the threshold ──
-$r2 = agent 'Filter $llm_get_top_processes_by to processes exceeding $memory_threshold_mb MB'
+# ── Step 2: just say what you mean ───────────────────────────
+$r2 = agent "Filter those top processes to the ones exceeding the memory threshold"
 
 $r2.Result | ForEach-Object { "$($_.ProcessName) — $([math]::Round($_.WorkingSet64/1MB))MB" }
 # vmmemWSL — 7642MB
 ```
 
-The agent read `$llm_get_top_processes_by` (prior result) and `$memory_threshold_mb` (user variable) from `Global:` scope. No piping, no parameters — it's just there.
+No variable names. The agent saw `$llm_get_top_processes_by` in `<session_context>` and discovered `$memory_threshold_mb` from the user's global scope. It connected "those top processes" to call #1 and "the memory threshold" to the variable — automatically.
 
 ```powershell
 # ── User adds context ────────────────────────────────────────
@@ -76,8 +76,8 @@ $global:user_note = "vmmemWSL is expected during builds. Flag anything else."
 ```
 
 ```powershell
-# ── Step 3: agent reads full history + user note ─────────────
-$r3 = agent 'Read $llm_history and $user_note. Write a session report.'
+# ── Step 3: ask for a summary — agent finds everything it needs ──
+$r3 = agent "Write a session report. Note anything unexpected."
 
 $r3.Content
 # 1. GATHERED: Top 5 processes — vmmemWSL (7,642 MB), Memory Compression (957 MB),
@@ -87,6 +87,8 @@ $r3.Content
 # 4. ASSESSMENT: No anomalies. All high-memory processes are accounted for.
 ```
 
+The agent found the session history, the user note, and every prior result on its own — without being told where to look.
+
 ```powershell
 # ── The session history tracked everything ────────────────────
 $global:llm_history
@@ -94,11 +96,11 @@ $global:llm_history
 # Index GlobalName                    Type  Prompt
 # ----- ----------                    ----  ------
 #     1 llm_get_top_processes_by      agent Get the top 5 processes by WorkingSet64
-#     2 llm_filter_processes          agent Filter $llm_get_top_processes_by to...
-#     3 llm_read_llm_history          agent Read $llm_history and $user_note...
+#     2 llm_filter_top_processes      agent Filter those top processes to the ones...
+#     3 llm_session_report            agent Write a session report. Note anything...
 ```
 
-**Total: 3 calls, ~31K tokens.** Each call saw the full accumulated context from every prior call, plus any variables the user set in between. Like Claude Code — but at a fraction of the token cost.
+**Total: 3 calls, ~20K tokens.** Each call saw the full accumulated context from every prior call, plus any variables the user set in between. Like Claude Code — but at a fraction of the token cost, and without spelling out a single variable name.
 
 ## How it works
 

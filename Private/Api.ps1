@@ -181,6 +181,34 @@ $($_.Directive.Trim())
             $sections.Add("<module_directives>`n$($dBlocks -join "`n`n")`n</module_directives>")
         }
 
+        # ── Session context: enumerate $llm_* globals ──────────────────
+        $llmVars = Get-Variable -Scope Global -Name 'llm_*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'llm_history' }
+        $historyVar = Get-Variable -Scope Global -Name 'llm_history' -ErrorAction SilentlyContinue
+
+        if ($llmVars -or ($historyVar -and $historyVar.Value.Count -gt 0)) {
+            $ctxLines = [System.Collections.Generic.List[string]]::new()
+            if ($historyVar -and $historyVar.Value.Count -gt 0) {
+                $ctxLines.Add("  Session history ($($historyVar.Value.Count) prior call(s)):")
+                foreach ($h in $historyVar.Value) {
+                    $ctxLines.Add("    #$($h.Index) `$$($h.GlobalName) [$($h.Type)] — $($h.Prompt)")
+                }
+            }
+            if ($llmVars) {
+                $ctxLines.Add("  Available result variables:")
+                foreach ($v in $llmVars) {
+                    $typeName = if ($null -ne $v.Value) { $v.Value.GetType().Name } else { 'null' }
+                    $preview  = try {
+                        $s = ($v.Value | Out-String -Width 120).Trim()
+                        if ($s.Length -gt 120) { $s.Substring(0,117) + '...' } else { $s }
+                    } catch { '(unable to preview)' }
+                    $ctxLines.Add("    `$$($v.Name) [$typeName] — $preview")
+                }
+            }
+            $sections.Add("<session_context>`n$($ctxLines -join "`n")`n</session_context>")
+            Write-Verbose "Session context: $(@($llmVars).Count) llm_ var(s), $($historyVar.Value.Count) history entries"
+        }
+
         $sections.Add(@"
 You are an expert PowerShell assistant operating inside the environment described above.
 - Prefer modules already loaded; reference real cmdlets.
@@ -191,6 +219,8 @@ You are an expert PowerShell assistant operating inside the environment describe
 - For destructive operations (Remove-, Stop-, Format- etc.) always warn the user before acting.
 - If a module has a claude.md directive, follow its conventions exactly.
 - IMPORTANT: Always compute your final answer through invoke_powershell so the result is a live typed .NET object in `$refs`, not just text. For example, if asked "What is 2+2?", call invoke_powershell with `2+2` so the result is [int]4. The caller accesses your answer via .Result — make sure it contains the real object.
+- When the user refers to prior results in natural language (e.g. "those processes", "the services from before", "filter those top results"), resolve the reference to the matching `$llm_*` variable from <session_context>. Use the variable names, types, and history prompts to infer which prior result the user means. Do NOT require the user to spell out variable names — that is your job.
+- All global variables from the user's PowerShell session are available in your runspace (not just `$llm_*`). When the user references something by description (e.g. "the memory threshold", "the output path"), use `Get-Variable -Scope Global` to discover the matching variable. Always try to resolve references before asking the user for values.
 "@)
     }
 
