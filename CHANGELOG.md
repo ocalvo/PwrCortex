@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/ocalvo/PwrCortex/compare/v0.8.0...v0.9.0) (2026-04-16)
+
+
+### Features
+
+* inject session context into system prompt for natural language references ([#26](https://github.com/ocalvo/PwrCortex/issues/26)) ([2cc5069](https://github.com/ocalvo/PwrCortex/commit/2cc506917dd73ea954476c0feb090383ea448857))
+
 ## [0.8.0](https://github.com/ocalvo/PwrCortex/compare/v0.7.0...v0.8.0) (2026-04-16)
 
 
