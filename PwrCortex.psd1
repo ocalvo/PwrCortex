@@ -18,10 +18,11 @@
         'Get-LLMProviders'
         'Get-LLMEnvironment'
         'Get-LLMModuleDirectives'
+        'Push-LLMInput'
     )
     CmdletsToExport   = @()
     VariablesToExport  = @()
-    AliasesToExport    = @('swarm', 'agent', 'llm', 'chat')
+    AliasesToExport    = @('swarm', 'think', 'agent', 'llm', 'chat', 'feed')
     PrivateData       = @{
         PSData = @{
             Tags       = @('LLM', 'AI', 'Agent', 'Swarm', 'Anthropic', 'OpenAI', 'Claude', 'GPT', 'PowerShell')

@@ -69,7 +69,10 @@ function Invoke-LLMAgent {
         [int]$ToolTimeoutSec = 30,
 
         [switch]$AutoConfirm,
-        [switch]$Quiet
+        [switch]$Quiet,
+
+        [Parameter()]
+        [object[]]$InputObject
     )
     begin {
         if (-not $Provider) { $Provider = $env:LLM_DEFAULT_PROVIDER ?? 'Anthropic' }
@@ -81,6 +84,17 @@ function Invoke-LLMAgent {
         $script:DebugPreference   = $DebugPreference
         $agentSession = script:New-AgentSession
         try {
+
+        # ── Pre-seed $refs with pipeline input if provided ──────────────────
+        if ($InputObject -and $InputObject.Count -gt 0) {
+            $agentSession.NextId++
+            $refId = $agentSession.NextId
+            $refVal = if ($InputObject.Count -eq 1) { $InputObject[0] } else { $InputObject }
+            $agentSession.Refs[$refId] = $refVal
+            $inputSummary = script:Format-RefSummary -Id $refId -Value $refVal
+            $Prompt = "Input data pre-loaded as `$refs[$refId]:`n$inputSummary`n`nTask: $Prompt"
+            Write-Verbose "Pre-seeded `$refs[$refId] with $($InputObject.Count) input object(s)"
+        }
 
         Write-Verbose "Invoke-LLMAgent: $Provider/$Model, maxTurns=$MaxTurns, toolTimeout=${ToolTimeoutSec}s"
         $sys      = script:Build-SystemPrompt -UserSystemPrompt $SystemPrompt -IncludeEnv $true
