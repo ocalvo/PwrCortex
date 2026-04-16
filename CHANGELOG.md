@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/ocalvo/PwrCortex/compare/v0.6.0...v0.7.0) (2026-04-16)
+
+
+### Features
+
+* add think alias, token breakdown, and Push-LLMInput cmdlet ([#21](https://github.com/ocalvo/PwrCortex/issues/21)) ([b153332](https://github.com/ocalvo/PwrCortex/commit/b15333252e4f1dc70cb1f4485aafde09c89c1b6c)), closes [#20](https://github.com/ocalvo/PwrCortex/issues/20)
+
 ## [0.6.0](https://github.com/ocalvo/PwrCortex/compare/v0.5.0...v0.6.0) (2026-04-15)
 
 
