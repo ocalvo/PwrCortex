@@ -56,7 +56,7 @@ function script:Write-SwarmSummary {
     $failed  = @($Result.Tasks | Where-Object Status -eq 'failed').Count
     $skipped = @($Result.Tasks | Where-Object Status -eq 'skipped').Count
     Write-Host "  $($c.Silver)Tasks      $($c.Reset)$($c.Green)$done done$($c.Reset)  $($c.Red)$failed failed$($c.Reset)  $($c.Slate)$skipped skipped$($c.Reset)"
-    Write-Host "  $($c.Silver)Tokens     $($c.Reset)$($Result.TotalTokens)"
+    Write-Host "  $($c.Silver)Tokens     $($c.Reset)$($Result.TotalTokens)  $($c.Slate)(in: $($Result.InputTokens)  out: $($Result.OutputTokens))$($c.Reset)"
     Write-Host "  $($c.Silver)Wall time  $($c.Reset)$([math]::Round($Result.TotalSec,2))s"
     Write-Host ""
     script:Write-Rule -Label "SYNTHESIS" -Color $c.Amber
@@ -99,7 +99,7 @@ Goal: $Goal
     try {
         $tasks = $json | ConvertFrom-Json
         Write-Verbose "Orchestrator produced $(@($tasks).Count) task(s)"
-        return @{ Tasks=$tasks; Tokens=$resp.TotalTokens }
+        return @{ Tasks=$tasks; Tokens=$resp.TotalTokens; InputTokens=$resp.InputTokens; OutputTokens=$resp.OutputTokens }
     } catch {
         Write-Error "Orchestrator produced invalid JSON task list: $_" -ErrorAction Stop
     }
@@ -333,5 +333,5 @@ Acknowledge any failed tasks and explain what impact that has on completeness.
         -SystemPrompt 'You are a synthesis agent. Produce a clear, consolidated answer from the worker results provided.' `
         -Messages @(@{role='user';content=$prompt}) -MaxTokens 2048 -WithEnv $false
 
-    return @{ Content=$resp.Content; Tokens=$resp.TotalTokens }
+    return @{ Content=$resp.Content; Tokens=$resp.TotalTokens; InputTokens=$resp.InputTokens; OutputTokens=$resp.OutputTokens }
 }

@@ -74,6 +74,8 @@ function Invoke-LLMSwarm {
         Write-Verbose "Invoke-LLMSwarm: $Provider/$Model, maxTasks=$MaxTasks, timeout=${TimeoutSec}s"
         $swStart = [System.Diagnostics.Stopwatch]::StartNew()
         $totalTokens = 0
+        $totalInputTokens  = 0
+        $totalOutputTokens = 0
 
         # ── Phase 1: Decompose ─────────────────────────────────────────────
         if (-not $Quiet) {
@@ -83,7 +85,9 @@ function Invoke-LLMSwarm {
         $decomp     = script:Invoke-OrchestratorDecompose -Goal $Goal -Provider $Provider `
             -Model $Model -Context $envContext -MaxTasks $MaxTasks
         $tasks      = $decomp.Tasks
-        $totalTokens += $decomp.Tokens
+        $totalTokens       += $decomp.Tokens
+        $totalInputTokens  += $decomp.InputTokens
+        $totalOutputTokens += $decomp.OutputTokens
 
         if (-not $Quiet) { script:Write-SwarmHeader -Goal $Goal -TaskCount $tasks.Count }
 
@@ -96,7 +100,9 @@ function Invoke-LLMSwarm {
 
         $finishedTasks | ForEach-Object {
             if ($_.Result -is [PSCustomObject] -and $_.Result.TotalTokens) {
-                $totalTokens += $_.Result.TotalTokens
+                $totalTokens       += $_.Result.TotalTokens
+                $totalInputTokens  += $_.Result.InputTokens
+                $totalOutputTokens += $_.Result.OutputTokens
             }
         }
 
@@ -107,7 +113,9 @@ function Invoke-LLMSwarm {
         }
         $synth = script:Invoke-OrchestratorSynthesize -Goal $Goal `
             -TaskResults $finishedTasks -Provider $Provider -Model $Model
-        $totalTokens += $synth.Tokens
+        $totalTokens       += $synth.Tokens
+        $totalInputTokens  += $synth.InputTokens
+        $totalOutputTokens += $synth.OutputTokens
         $swStart.Stop()
 
         $result = [PSCustomObject]@{
@@ -117,6 +125,8 @@ function Invoke-LLMSwarm {
             Model        = $Model
             Tasks        = $finishedTasks
             Synthesis    = $synth.Content
+            InputTokens  = $totalInputTokens
+            OutputTokens = $totalOutputTokens
             TotalTokens  = $totalTokens
             TotalSec     = $swStart.Elapsed.TotalSeconds
             StartedAt    = [datetime]::UtcNow - $swStart.Elapsed
@@ -124,7 +134,7 @@ function Invoke-LLMSwarm {
 
         $dds = [System.Management.Automation.PSPropertySet]::new(
             'DefaultDisplayPropertySet',
-            [string[]]@('Goal','TotalTokens','TotalSec','Synthesis'))
+            [string[]]@('Goal','InputTokens','OutputTokens','TotalTokens','TotalSec','Synthesis'))
         $result.PSObject.Members.Add(
             [System.Management.Automation.PSMemberSet]::new('PSStandardMembers',[System.Management.Automation.PSMemberInfo[]]@($dds)))
 
