@@ -11,6 +11,30 @@ function script:Test-IsDestructive([string]$Expression) {
     return $false
 }
 
+function script:Import-GlobalVariables {
+    param(
+        [System.Management.Automation.Runspaces.InitialSessionState]$ISS,
+        [string[]]$Exclude = @()
+    )
+    $excludeSet = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]$Exclude, [System.StringComparer]::OrdinalIgnoreCase)
+    $count = 0
+    foreach ($v in (Get-Variable -Scope Global)) {
+        if ($excludeSet.Contains($v.Name)) { continue }
+        if ($v.Options -band [System.Management.Automation.ScopedItemOptions]::Constant) { continue }
+        try {
+            $ISS.Variables.Add(
+                [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+                    $v.Name, $v.Value, $v.Description))
+            $count++
+        } catch {
+            Write-Debug "Skipped global variable '$($v.Name)': $_"
+        }
+    }
+    Write-Verbose "Imported $count global variable(s) into ISS"
+    $count
+}
+
 function script:New-AgentSession {
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
     $mods = @(Get-Module)
@@ -22,13 +46,14 @@ function script:New-AgentSession {
                 $entry.Key, $entry.Value, ''))
         $envCount++
     }
+    $varCount = script:Import-GlobalVariables -ISS $iss -Exclude @('refs')
     $refs = @{}
     $iss.Variables.Add(
         [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
             'refs', $refs, 'Agent object registry'))
     $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
     $rs.Open()
-    Write-Verbose "Agent session opened: $($mods.Count) modules, $envCount env vars, runspace=$($rs.InstanceId)"
+    Write-Verbose "Agent session opened: $($mods.Count) modules, $envCount env vars, $varCount global vars, runspace=$($rs.InstanceId)"
     @{ Runspace = $rs; Refs = $refs; NextId = 0 }
 }
 
