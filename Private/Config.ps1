@@ -69,15 +69,44 @@ function script:Pop-Preferences {
 # Every agent/swarm response is stored in $global:llm_<type>_<N> so the user's
 # session accumulates results that are available to subsequent calls.
 
-$script:GlobalResultCounter = @{ agent = 0; swarm = 0 }
+# Initialize the session-wide result history stack (persists across calls)
+if (-not (Get-Variable -Name 'llm_history' -Scope Global -ErrorAction SilentlyContinue)) {
+    $global:llm_history = [System.Collections.Generic.List[PSCustomObject]]::new()
+}
 
 function script:Save-GlobalResult {
-    param([string]$Type, [object]$Result)
-    $script:GlobalResultCounter[$Type]++
-    $n    = $script:GlobalResultCounter[$Type]
-    $name = "llm_${Type}_${n}"
+    param([string]$Type, [string]$Prompt, [object]$Result)
+    # Build a slug from the prompt: keep meaningful words, drop noise
+    $stopWords = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@('the','a','an','is','are','was','were','be','been','being',
+                     'in','on','at','to','for','of','with','and','or','but',
+                     'not','no','do','does','did','have','has','had','will',
+                     'would','could','should','can','may','might','shall',
+                     'this','that','these','those','it','its','my','your',
+                     'all','each','every','what','which','how','when','where',
+                     'who','why','me','i','you','we','they','them','he','she'),
+        [System.StringComparer]::OrdinalIgnoreCase)
+    $words = ($Prompt -replace '[^\w\s]', '' -split '\s+') |
+        Where-Object { $_.Length -gt 1 -and -not $stopWords.Contains($_) } |
+        Select-Object -First 4
+    $slug = ($words -join '_').ToLower() -replace '[^a-z0-9_]', ''
+    if (-not $slug) { $slug = $Type }
+    $name = "llm_${slug}"
+    # Ensure uniqueness by appending a counter if needed
+    if (Get-Variable -Name $name -Scope Global -ErrorAction SilentlyContinue) {
+        $n = 2
+        while (Get-Variable -Name "${name}_${n}" -Scope Global -ErrorAction SilentlyContinue) { $n++ }
+        $name = "${name}_${n}"
+    }
     Set-Variable -Name $name -Value $Result -Scope Global
-    Write-Verbose "Result stored in `$global:$name"
+    $global:llm_history.Add([PSCustomObject]@{
+        Index      = $global:llm_history.Count + 1
+        GlobalName = $name
+        Type       = $Type
+        Prompt     = $Prompt
+        Timestamp  = [datetime]::UtcNow
+    })
+    Write-Verbose "Result stored in `$global:$name (history #$($global:llm_history.Count))"
     $name
 }
 
