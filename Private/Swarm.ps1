@@ -142,11 +142,12 @@ function script:New-SwarmRunspacePool {
             [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
                 $entry.Key, $entry.Value, ''))
     }
+    $varCount = script:Import-GlobalVariables -ISS $iss
 
     $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(
         1, $MaxRunspaces, $iss, $Host)
     $pool.Open()
-    Write-Verbose "RunspacePool opened: max=$MaxRunspaces, $($mods.Count) modules cloned"
+    Write-Verbose "RunspacePool opened: max=$MaxRunspaces, $($mods.Count) modules cloned, $varCount global vars"
     $pool
 }
 
