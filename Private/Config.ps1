@@ -116,7 +116,7 @@ $script:DestructivePattern = '^(Remove|Stop|Kill|Format|Clear|Reset|Disable|Unin
 # The single tool definition exposed to all providers
 $script:AgentTool = @{
     name        = 'invoke_powershell'
-    description = 'Execute a PowerShell expression in a live session. Results are stored in $refs[id] for reuse in later calls. All loaded modules and their claude.md directives are available.'
+    description = 'Execute a PowerShell expression in a live session. Results are stored as live .NET objects in $refs[id] for reuse in later calls. The caller receives these objects via .Result — always use this tool to produce your final answer so it contains a typed object, not just text. All loaded modules and their claude.md directives are available.'
     input_schema = @{
         type       = 'object'
         required   = @('expression')

@@ -196,9 +196,10 @@ function Invoke-LLMAgent {
 
         $result = $null
         if ($agentSession.Refs.Count -gt 0) {
-            $result = @(foreach ($key in ($agentSession.Refs.Keys | Sort-Object)) {
+            $all = @(foreach ($key in ($agentSession.Refs.Keys | Sort-Object)) {
                 $agentSession.Refs[$key]
             })
+            $result = if ($all.Count -eq 1) { $all[0] } else { $all }
         }
         $resp = script:New-ResponseObj -Provider $Provider -Model $Model -Content $finalText `
             -InputTokens $totalIn -OutputTokens $totalOut -StopReason $stopReason `
