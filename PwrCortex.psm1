@@ -59,6 +59,7 @@ $ErrorActionPreference = 'Stop'
 
 # ── Dot-source private internals (order matters: Config first) ────────────────
 . "$PSScriptRoot/Private/Config.ps1"
+. "$PSScriptRoot/Private/Context.ps1"
 . "$PSScriptRoot/Private/Rendering.ps1"
 . "$PSScriptRoot/Private/Api.ps1"
 . "$PSScriptRoot/Private/AgentSession.ps1"
@@ -67,6 +68,18 @@ $ErrorActionPreference = 'Stop'
 
 # ── Dot-source public cmdlets ────────────────────────────────────────────────
 Get-ChildItem "$PSScriptRoot/Public/*.ps1" | ForEach-Object { . $_.FullName }
+
+# ── Install Out-Default proxy so every prompt result lands in $global:context ─
+script:Install-ContextCapture
+
+# ── Clean up the Out-Default proxy when the module is removed ────────────────
+$ExecutionContext.SessionState.Module.OnRemove = {
+    Get-ChildItem function: |
+        Where-Object { $_.Name -eq 'Out-Default' } |
+        ForEach-Object {
+            Remove-Item -LiteralPath "function:$($_.Name)" -Force -ErrorAction SilentlyContinue
+        }
+}
 
 # ── Exports ──────────────────────────────────────────────────────────────────
 New-Alias -Name 'swarm'  -Value 'Invoke-LLMSwarm' -Scope Script
@@ -88,4 +101,5 @@ Export-ModuleMember -Function @(
     'Get-LLMEnvironment'
     'Get-LLMModuleDirectives'
     'Push-LLMInput'
+    'Remove-Context'
 ) -Alias @('swarm', 'think', 'agent', 'llm', 'chat', 'feed')

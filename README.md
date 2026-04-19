@@ -42,9 +42,6 @@ A real session. Each call builds on the last. No variable names to remember — 
 # ── Step 1: gather data ──────────────────────────────────────
 $r1 = agent "Get the top 5 processes by WorkingSet64"
 
-$r1.GlobalName
-# llm_get_top_processes_by
-
 $r1.Result | ForEach-Object { "$($_.ProcessName) — $([math]::Round($_.WorkingSet64/1MB))MB" }
 # vmmemWSL — 7642MB
 # Memory Compression — 957MB
@@ -53,7 +50,7 @@ $r1.Result | ForEach-Object { "$($_.ProcessName) — $([math]::Round($_.WorkingS
 # msedge — 426MB
 ```
 
-The result is stored as `$global:llm_get_top_processes_by` — a live `[Process[]]` array, not a response wrapper.
+The response is an `[LLMResponse]` with `.Result` pointing at a live `[Process[]]` array. Because you rendered it at the prompt, the typed objects also live in `$global:context[-1].Output`.
 
 ```powershell
 # ── User sets a threshold ────────────────────────────────────
@@ -68,7 +65,7 @@ $r2.Result | ForEach-Object { "$($_.ProcessName) — $([math]::Round($_.WorkingS
 # vmmemWSL — 7642MB
 ```
 
-No variable names. The agent saw `$llm_get_top_processes_by` in `<session_context>` and discovered `$memory_threshold_mb` from the user's global scope. It connected "those top processes" to call #1 and "the memory threshold" to the variable — automatically.
+No variable names. The agent saw the prior `$r1` render in `<conversation_context>` and discovered `$memory_threshold_mb` from the user's global scope. It connected "those top processes" to the previous context entry and "the memory threshold" to the variable — automatically.
 
 ```powershell
 # ── User adds context ────────────────────────────────────────
@@ -87,31 +84,41 @@ $r3.Content
 # 4. ASSESSMENT: No anomalies. All high-memory processes are accounted for.
 ```
 
-The agent found the session history, the user note, and every prior result on its own — without being told where to look.
+The agent found the conversation so far, the user note, and every prior result on its own — without being told where to look.
 
 ```powershell
-# ── The session history tracked everything ────────────────────
-$global:llm_history
+# ── The conversation log tracked everything ───────────────────
+$global:context | Select-Object -Last 3 HistoryId, Timestamp, Command
 
-# Index GlobalName                    Type  Prompt
-# ----- ----------                    ----  ------
-#     1 llm_get_top_processes_by      agent Get the top 5 processes by WorkingSet64
-#     2 llm_filter_top_processes      agent Filter those top processes to the ones...
-#     3 llm_session_report            agent Write a session report. Note anything...
+# HistoryId Timestamp           Command
+# --------- ---------           -------
+#        12 2026-04-19 10:12:41 agent "Get the top 5 processes by WorkingSet64"
+#        14 2026-04-19 10:13:02 agent "Filter those top processes to the ones..."
+#        15 2026-04-19 10:13:33 agent "Write a session report. Note anything..."
 ```
 
 **Total: 3 calls, ~20K tokens.** Each call saw the full accumulated context from every prior call, plus any variables the user set in between. Like Claude Code — but at a fraction of the token cost, and without spelling out a single variable name.
 
 ## How it works
 
-Every agent and swarm call:
+On import, PwrCortex installs an `Out-Default` proxy and initializes a single
+global — `$global:context`. Every command the user runs at the interactive
+prompt appends `{ HistoryId, Timestamp, Command, Output }` to `$global:context`,
+where `Output` is the list of live typed .NET objects that were displayed.
 
-1. **Clones your session** into a dedicated Runspace — modules, env vars, and all `Global:` variables
-2. **Runs tool calls** that store live .NET objects in `$refs[id]` (not JSON, not text)
-3. **Stores `.Result`** in a semantically-named global: `$global:llm_<slug_from_prompt>`
-4. **Appends to `$global:llm_history`** — an ordered list of all calls with timestamps
+When you call `agent`, `swarm`, or `chat`:
 
-So the next call automatically sees everything. Your session is the context window.
+1. **The conversation log is injected** into the system prompt — the LLM reads
+   `$global:context` as the transcript, exactly like a chat history.
+2. **Your session is cloned** into a dedicated Runspace — modules, env vars,
+   and all `Global:` variables (including `$context` itself) come along.
+3. **Tool calls store live .NET objects** in `$refs[id]` — not JSON, not text.
+4. **The response is returned** as an `[LLMResponse]` with `.Content`,
+   `.Result`, `.ToolCalls`, etc. That response itself flows through Out-Default
+   and lands in `$global:context` for the next call to see.
+
+Use `Remove-Context` to scrub or trim entries (e.g. before a tokens-sensitive
+call, or after commands whose output you do not want sent to the provider).
 
 ## Pipe data in
 

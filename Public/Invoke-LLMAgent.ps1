@@ -111,10 +111,10 @@ function Invoke-LLMAgent {
         }
 
         do {
-            $p   = @{ Model=$Model; SystemPrompt=$sys; Messages=$messages.ToArray(); MaxTokens=$MaxTokens }
+            $apiParams = @{ Model=$Model; SystemPrompt=$sys; Messages=$messages.ToArray(); MaxTokens=$MaxTokens }
             $raw = switch ($Provider) {
-                'Anthropic' { script:Invoke-AnthropicRaw @p -Tools @($script:AgentTool) }
-                'OpenAI'    { script:Invoke-OpenAIRaw    @p -Tools @($script:AgentTool) }
+                'Anthropic' { script:Invoke-AnthropicRaw @apiParams -Tools @($script:AgentTool) }
+                'OpenAI'    { script:Invoke-OpenAIRaw    @apiParams -Tools @($script:AgentTool) }
             }
             $r        = $raw.Response
             $totalSec += $raw.ElapsedSec
@@ -147,6 +147,9 @@ function Invoke-LLMAgent {
                             if (-not $Quiet) {
                                 script:Write-ToolCallBox -Expression $expr -Result $guarded.Output `
                                     -IsError $guarded.IsError -CallNum $tcObj.CallNum
+                            }
+                            if (-not $guarded.IsError -and -not $guarded.Denied -and $guarded.RefId -gt 0) {
+                                script:Add-ContextEntry -Source 'Agent' -Command $expr -Items @($guarded.RefValue)
                             }
                             $toolResults.Add((script:Build-AnthropicToolResult $tc.id $guarded.Output))
                         }
@@ -181,6 +184,9 @@ function Invoke-LLMAgent {
                                 script:Write-ToolCallBox -Expression $expr -Result $guarded.Output `
                                     -IsError $guarded.IsError -CallNum $tcObj.CallNum
                             }
+                            if (-not $guarded.IsError -and -not $guarded.Denied -and $guarded.RefId -gt 0) {
+                                script:Add-ContextEntry -Source 'Agent' -Command $expr -Items @($guarded.RefValue)
+                            }
                             $messages.Add((script:Build-OpenAIToolResult $tc.id $guarded.Output))
                         }
                     }
@@ -205,10 +211,6 @@ function Invoke-LLMAgent {
             -InputTokens $totalIn -OutputTokens $totalOut -StopReason $stopReason `
             -ResponseId '' -ElapsedSec $totalSec -Raw $null -ToolCalls $allToolCalls.ToArray() `
             -Result $result
-
-        $globalValue = if ($null -ne $resp.Result) { $resp.Result } else { $resp }
-        $globalName = script:Save-GlobalResult -Type 'agent' -Prompt $Prompt -Result $globalValue
-        $resp | Add-Member -NotePropertyName GlobalName -NotePropertyValue $globalName
 
         if (-not $Quiet) {
             script:Write-ResponseBox -Content $finalText -Provider $Provider -Model $Model `

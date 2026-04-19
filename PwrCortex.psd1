@@ -19,6 +19,7 @@
         'Get-LLMEnvironment'
         'Get-LLMModuleDirectives'
         'Push-LLMInput'
+        'Remove-Context'
     )
     CmdletsToExport   = @()
     VariablesToExport  = @()
