@@ -67,18 +67,18 @@ function Push-LLMInput {
         $items.Add($InputObject)
     }
     end {
-        $p = @{
+        $agentParams = @{
             Prompt         = $Prompt
             InputObject    = $items.ToArray()
         }
-        if ($Provider)       { $p.Provider       = $Provider }
-        if ($Model)          { $p.Model          = $Model }
-        if ($MaxTokens)      { $p.MaxTokens      = $MaxTokens }
-        if ($MaxTurns)       { $p.MaxTurns       = $MaxTurns }
-        if ($ToolTimeoutSec) { $p.ToolTimeoutSec = $ToolTimeoutSec }
-        if ($AutoConfirm)    { $p.AutoConfirm    = $true }
-        if ($Quiet)          { $p.Quiet          = $true }
+        if ($Provider)       { $agentParams.Provider       = $Provider }
+        if ($Model)          { $agentParams.Model          = $Model }
+        if ($MaxTokens)      { $agentParams.MaxTokens      = $MaxTokens }
+        if ($MaxTurns)       { $agentParams.MaxTurns       = $MaxTurns }
+        if ($ToolTimeoutSec) { $agentParams.ToolTimeoutSec = $ToolTimeoutSec }
+        if ($AutoConfirm)    { $agentParams.AutoConfirm    = $true }
+        if ($Quiet)          { $agentParams.Quiet          = $true }
 
-        Invoke-LLMAgent @p
+        Invoke-LLMAgent @agentParams
     }
 }

@@ -11,34 +11,42 @@ function script:Test-IsDestructive([string]$Expression) {
     return $false
 }
 
-function script:Import-GlobalVariables {
-    param(
-        [System.Management.Automation.Runspaces.InitialSessionState]$ISS,
-        [string[]]$Exclude = @()
-    )
-    $excludeSet = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]]$Exclude, [System.StringComparer]::OrdinalIgnoreCase)
-    $count = 0
-    foreach ($v in (Get-Variable -Scope Global)) {
-        if ($excludeSet.Contains($v.Name)) { continue }
-        if ($v.Options -band [System.Management.Automation.ScopedItemOptions]::Constant) { continue }
-        try {
-            $ISS.Variables.Add(
-                [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
-                    $v.Name, $v.Value, $v.Description))
-            $count++
-        } catch {
-            Write-Debug "Skipped global variable '$($v.Name)': $_"
-        }
+# Seeds the conversation log into a runspace. `$context` is the ONLY user-scope
+# variable we propagate — the agent reads prior commands/outputs from it, and
+# everything else the agent needs it obtains by calling cmdlets. Cloning all
+# global variables was legacy behavior from before $context existed; it added
+# ~70 vars of noise, collided with read-only PS built-ins, and buried the
+# signal the LLM actually cares about.
+function script:Add-ContextVariable {
+    param([System.Management.Automation.Runspaces.InitialSessionState]$ISS)
+    $ctx = Get-Variable -Scope Global -Name 'context' -ErrorAction SilentlyContinue
+    if ($ctx) {
+        $ISS.Variables.Add(
+            [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+                'context', $ctx.Value, 'PwrCortex conversation log'))
+        Write-Verbose "Seeded `$context into ISS ($(@($ctx.Value).Count) entr$(if(@($ctx.Value).Count -eq 1){'y'}else{'ies'}))"
+    } else {
+        Write-Verbose "`$context not initialized; nothing to seed"
     }
-    Write-Verbose "Imported $count global variable(s) into ISS"
-    $count
 }
 
 function script:New-AgentSession {
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
-    $mods = @(Get-Module)
-    foreach ($mod in $mods) { $iss.ImportPSModule($mod.Name) }
+    # Only import modules that have a backing file on disk. Dynamic in-memory
+    # modules (e.g. script-scoped ones created by Publish-Modules or ad-hoc
+    # New-Module) have no .Path and cannot be reloaded by name into a fresh
+    # runspace — attempting it aborts ISS.Open() with
+    # "The specified module '<name>' was not loaded."
+    $mods = @(Get-Module | Where-Object { $_.Path -and (Test-Path $_.Path) })
+    $skipped = 0
+    foreach ($mod in $mods) {
+        try { $iss.ImportPSModule($mod.Name) }
+        catch {
+            Write-Debug "Skipped module '$($mod.Name)': $_"
+            $skipped++
+        }
+    }
+    if ($skipped -gt 0) { Write-Verbose "Skipped $skipped module(s) that failed ImportPSModule" }
     $envCount = 0
     foreach ($entry in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
         $iss.EnvironmentVariables.Add(
@@ -46,14 +54,14 @@ function script:New-AgentSession {
                 $entry.Key, $entry.Value, ''))
         $envCount++
     }
-    $varCount = script:Import-GlobalVariables -ISS $iss -Exclude @('refs')
+    script:Add-ContextVariable -ISS $iss
     $refs = @{}
     $iss.Variables.Add(
         [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
             'refs', $refs, 'Agent object registry'))
     $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
     $rs.Open()
-    Write-Verbose "Agent session opened: $($mods.Count) modules, $envCount env vars, $varCount global vars, runspace=$($rs.InstanceId)"
+    Write-Verbose "Agent session opened: $($mods.Count) modules, $envCount env vars, runspace=$($rs.InstanceId)"
     @{ Runspace = $rs; Refs = $refs; NextId = 0 }
 }
 
@@ -115,9 +123,11 @@ function script:Invoke-GuardedExpression {
         if ($answer -notmatch '^[Yy]$') {
             Write-Verbose "User denied destructive expression"
             return [PSCustomObject]@{
-                Output  = 'User denied execution of destructive expression.'
-                IsError = $true
-                Denied  = $true
+                Output   = 'User denied execution of destructive expression.'
+                IsError  = $true
+                Denied   = $true
+                RefId    = 0
+                RefValue = $null
             }
         }
         Write-Verbose "User approved destructive expression"
@@ -135,9 +145,11 @@ function script:Invoke-GuardedExpression {
             $ps.Stop()
             $ps.Dispose()
             return [PSCustomObject]@{
-                Output  = "Tool call timed out after ${TimeoutSec}s. Try a simpler approach."
-                IsError = $true
-                Denied  = $false
+                Output   = "Tool call timed out after ${TimeoutSec}s. Try a simpler approach."
+                IsError  = $true
+                Denied   = $false
+                RefId    = 0
+                RefValue = $null
             }
         }
         $result  = $ps.EndInvoke($async)
@@ -146,28 +158,44 @@ function script:Invoke-GuardedExpression {
 
         $output = @($result)
         if ($output.Count -eq 0 -and -not $streams) {
-            return [PSCustomObject]@{ Output = '(no output)'; IsError = $false; Denied = $false }
+            return [PSCustomObject]@{
+                Output   = '(no output)'
+                IsError  = $false
+                Denied   = $false
+                RefId    = 0
+                RefValue = $null
+            }
         }
 
         $summary = ''
+        $refId = 0
+        $refValue = $null
         if ($output.Count -gt 0) {
             $AgentSession.NextId++
-            $id = $AgentSession.NextId
-            $val = if ($output.Count -eq 1) { $output[0] } else { $output }
-            $AgentSession.Refs[$id] = $val
-            $summary = script:Format-RefSummary -Id $id -Value $val
-            Write-Verbose "Tool call stored ref:$id ($(if ($output.Count -eq 1) { $val.GetType().Name } else { "$($output.Count) items" }))"
+            $refId = $AgentSession.NextId
+            $refValue = if ($output.Count -eq 1) { $output[0] } else { $output }
+            $AgentSession.Refs[$refId] = $refValue
+            $summary = script:Format-RefSummary -Id $refId -Value $refValue
+            Write-Verbose "Tool call stored ref:$refId ($(if ($output.Count -eq 1) { $refValue.GetType().Name } else { "$($output.Count) items" }))"
         }
 
-        [PSCustomObject]@{ Output = ($summary + $streams); IsError = $false; Denied = $false }
+        [PSCustomObject]@{
+            Output   = ($summary + $streams)
+            IsError  = $false
+            Denied   = $false
+            RefId    = $refId
+            RefValue = $refValue
+        }
     }
     catch {
         Write-Error "Tool call failed: $_" -ErrorAction Continue
         $ps.Dispose()
         [PSCustomObject]@{
-            Output  = "Error: $($_.ToString())"
-            IsError = $true
-            Denied  = $false
+            Output   = "Error: $($_.ToString())"
+            IsError  = $true
+            Denied   = $false
+            RefId    = 0
+            RefValue = $null
         }
     }
 }

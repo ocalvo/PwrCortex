@@ -48,7 +48,12 @@ function script:Write-SwarmTaskLine {
 }
 
 function script:Write-SwarmSummary {
-    param([PSCustomObject]$Result)
+    param(
+        [PSCustomObject]$Result,
+        [int]$SynthInputTokens = 0,
+        [int]$SynthOutputTokens = 0,
+        [double]$SynthElapsedSec = 0
+    )
     $c = $script:C; $b = $script:Box; $w = script:Get-Width
     Write-Host ""
     script:Write-Rule -Label "SWARM COMPLETE" -Color $c.Cyan
@@ -62,8 +67,8 @@ function script:Write-SwarmSummary {
     script:Write-Rule -Label "SYNTHESIS" -Color $c.Amber
     Write-Host ""
     script:Write-ResponseBox -Content $Result.Synthesis -Provider $Result.Provider `
-        -Model $Result.Model -InputTokens 0 -OutputTokens 0 `
-        -StopReason 'synthesis' -ElapsedSec 0
+        -Model $Result.Model -InputTokens $SynthInputTokens -OutputTokens $SynthOutputTokens `
+        -StopReason 'synthesis' -ElapsedSec $SynthElapsedSec
 }
 
 # ── Orchestrator: decompose goal into task list ───────────────────────────────
@@ -80,9 +85,13 @@ Rules:
 - "id" must be unique short strings: t1, t2, t3 …
 - "dependsOn" is an array of ids that must complete before this task starts. Use [] for tasks that can run immediately.
 - Maximum $MaxTasks tasks. Prefer parallelism — only add dependencies when the task genuinely needs prior results.
-- Each "prompt" must be fully self-contained — the worker agent has no other context.
+- Each worker prompt must be fully self-contained. Workers see the same <conversation_context> block you see, but they do NOT see this decomposition prompt — so restate anything they need.
 - If a task needs the result of a prior task, say so explicitly in the prompt: "Given the result from task <id>: {{result::<id>}}, ..."
   The harness will substitute {{result::<id>}} with the actual JSON result before dispatching.
+
+The PwrCortex module directives above define how to ground user-activity
+questions in `\$global:context`. Apply them when deciding how many tasks to
+emit.
 
 Context about the environment:
 $Context
@@ -93,7 +102,7 @@ Goal: $Goal
     Write-Verbose "Orchestrator decomposing goal into max $MaxTasks tasks ($Provider/$Model)"
     $resp = script:Invoke-ProviderCompletion -Provider $Provider -Model $Model `
         -SystemPrompt $schema -Messages @(@{role='user';content="Decompose this goal into tasks."}) `
-        -MaxTokens 2048 -WithEnv $false
+        -MaxTokens 2048 -WithEnv $true
 
     $json = $resp.Content -replace '```json',''-replace '```','' -replace '(?s)^[^[\{]*','' | ForEach-Object { $_.Trim() }
     try {
@@ -122,32 +131,89 @@ $script:WorkerBlock = {
         $Shared["result::$TaskId"] = $resp
         $Shared["status::$TaskId"] = 'done'
     } catch {
-        $Shared["result::$TaskId"] = $_.ToString()
+        # Preserve position + stack trace so the dispatcher can surface *where*
+        # the worker failed. A bare $_.ToString() collapses to just the message
+        # and the caller has no hope of diagnosing the real origin.
+        $msg  = $_.Exception.Message
+        $pos  = if ($_.InvocationInfo) { $_.InvocationInfo.PositionMessage } else { '' }
+        $stk  = $_.ScriptStackTrace
+        $Shared["result::$TaskId"] = "$msg`n$pos`nScriptStackTrace:`n$stk"
         $Shared["status::$TaskId"] = 'failed'
     }
 }
 
 # ── RunspacePool factory — clones the user's session for parallel workers ─────
 
+function script:New-SwarmRunspacePoolInner {
+    param([string[]]$ModuleNames)
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    foreach ($n in $ModuleNames) {
+        try { $iss.ImportPSModule($n) }
+        catch { Write-Debug "Swarm: skipped module '$n': $_" }
+    }
+    foreach ($entry in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        if (-not $entry.Key) { continue }
+        $val = if ($null -eq $entry.Value) { '' } else { $entry.Value }
+        $iss.EnvironmentVariables.Add(
+            [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+                $entry.Key, $val, ''))
+    }
+    script:Add-ContextVariable -ISS $iss
+    $iss
+}
+
 function script:New-SwarmRunspacePool {
     param([int]$MaxRunspaces = 4)
 
-    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
-    $mods = @(Get-Module)
-    foreach ($mod in $mods) {
-        $iss.ImportPSModule($mod.Name)
-    }
-    foreach ($entry in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
-        $iss.EnvironmentVariables.Add(
-            [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
-                $entry.Key, $entry.Value, ''))
-    }
-    $varCount = script:Import-GlobalVariables -ISS $iss
+    # Try to clone every loaded module with a backing file into the worker
+    # runspace. If any one of them throws during the pool's Open() (e.g. a
+    # module's load script calls a cmdlet with a null -Path because something
+    # it depends on isn't seeded in the isolated runspace), fall back to
+    # PwrCortex-only so the swarm still runs.
+    $mods = @(Get-Module | Where-Object { $_.Path -and (Test-Path $_.Path) })
+    $fullNames = @($mods | ForEach-Object Name)
 
+    $issFull = script:New-SwarmRunspacePoolInner -ModuleNames $fullNames
     $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(
-        1, $MaxRunspaces, $iss, $Host)
-    $pool.Open()
-    Write-Verbose "RunspacePool opened: max=$MaxRunspaces, $($mods.Count) modules cloned, $varCount global vars"
+        1, $MaxRunspaces, $issFull, $Host)
+    try {
+        $pool.Open()
+        Write-Verbose "RunspacePool opened: max=$MaxRunspaces, $($mods.Count) modules cloned"
+        return $pool
+    } catch {
+        $err   = $_
+        $inner = if ($err.Exception.InnerException) { $err.Exception.InnerException.Message } else { $err.Exception.Message }
+        $pos   = $err.InvocationInfo.PositionMessage
+        $stack = $err.ScriptStackTrace
+        Write-Warning "RunspacePool.Open() failed with full module set; falling back to PwrCortex only. Cause: $inner"
+        Write-Verbose "Full-module pool open failure position: $pos"
+        Write-Verbose "Full-module pool open failure stack:`n$stack"
+        try { $pool.Dispose() } catch { }
+    }
+
+    $issMin = script:New-SwarmRunspacePoolInner -ModuleNames @('PwrCortex')
+    $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(
+        1, $MaxRunspaces, $issMin, $Host)
+    try {
+        $pool.Open()
+    } catch {
+        $err   = $_
+        $inner = if ($err.Exception.InnerException) { $err.Exception.InnerException.Message } else { $err.Exception.Message }
+        $pos   = $err.InvocationInfo.PositionMessage
+        $stack = $err.ScriptStackTrace
+        # Using throw (not Write-Error -ErrorAction Stop) so the original
+        # ErrorRecord's InvocationInfo propagates — the caller gets a
+        # PositionMessage pointing at the throw site with file:line, not a
+        # synthetic record pointing at Write-Error itself.
+        throw @"
+RunspacePool.Open() (fallback, PwrCortex only) failed.
+Cause : $inner
+$pos
+ScriptStackTrace:
+$stack
+"@
+    }
+    Write-Verbose "RunspacePool opened (fallback): PwrCortex only"
     $pool
 }
 
@@ -331,8 +397,14 @@ Acknowledge any failed tasks and explain what impact that has on completeness.
 "@
 
     $resp = script:Invoke-ProviderCompletion -Provider $Provider -Model $Model `
-        -SystemPrompt 'You are a synthesis agent. Produce a clear, consolidated answer from the worker results provided.' `
-        -Messages @(@{role='user';content=$prompt}) -MaxTokens 2048 -WithEnv $false
+        -SystemPrompt 'You are a synthesis agent. Produce a clear, consolidated answer from the worker results provided. Apply the PwrCortex grounding rules from the module directives above — if worker conclusions conflict with $global:context, trust $global:context.' `
+        -Messages @(@{role='user';content=$prompt}) -MaxTokens 2048 -WithEnv $true
 
-    return @{ Content=$resp.Content; Tokens=$resp.TotalTokens; InputTokens=$resp.InputTokens; OutputTokens=$resp.OutputTokens }
+    return @{
+        Content      = $resp.Content
+        Tokens       = $resp.TotalTokens
+        InputTokens  = $resp.InputTokens
+        OutputTokens = $resp.OutputTokens
+        ElapsedSec   = $resp.ElapsedSec
+    }
 }

@@ -23,6 +23,68 @@ backed by Anthropic (Claude) or OpenAI (GPT) APIs.
 | `Get-LLMProviders` | Check which providers have API keys configured and their default models. |
 | `Get-LLMEnvironment` | Capture a live snapshot of the PS session (version, OS, modules, commands). |
 | `Get-LLMModuleDirectives` | Discover `claude.md` files across loaded or installed modules. |
+| `Remove-Context` | Clear or trim entries from `$global:context` (the conversation log). |
+
+## Conversation Context — `$global:context`
+
+On `Import-Module PwrCortex`, the module initializes a single global variable,
+`$global:context`, and installs an `Out-Default` proxy so **every command the
+user runs at the interactive prompt** appends an entry to it.
+
+Each entry is a `[PSCustomObject]` with:
+
+| Property   | Meaning |
+|------------|---------|
+| `HistoryId`| PS command history id (`Get-History` id), or `-1` if none. |
+| `Timestamp`| UTC time the entry was appended. |
+| `Source`   | `'Human'`, `'Agent'`, or `'Swarm'`. |
+| `Command`  | The raw command line the user (or agent / swarm task) ran. |
+| `Output`   | `List[object]` of the **live typed .NET objects** that flowed through Out-Default (not format records). |
+
+`$global:context` is the canonical conversation transcript. Agents and swarms
+read it when building their system prompt, so the LLM sees exactly what the
+user has been doing. Pipe-assignments (`$p = Get-Process`) and redirected
+output (`... | Export-Csv`) do **not** touch Out-Default and therefore do not
+appear in `$context`. That is the intended behavior — `$context` reflects
+what was actually rendered to the user.
+
+### Grounding rule — READ CAREFULLY
+
+`$global:context` is the **single authoritative source** for "what the user
+did / typed / ran / saw" in their PowerShell session. When the user asks any
+question framed around their own activity — *"what did I just do"*, *"what
+was the last thing I ran"*, *"summarize my session"*, *"what did I see"* — the
+answer comes from `$global:context`, not from filesystem timestamps, git
+history, event logs, or process state.
+
+Those other signals reflect activity by **other processes** on the machine
+(editors, background services, other assistants, CI agents) that are NOT the
+user and do NOT belong in an answer about the user's actions. Do not attribute
+filesystem changes or process activity to the user unless a corresponding
+command appears as a `Source='Human'` entry in `$global:context`.
+
+Concretely:
+
+- When orchestrating / decomposing a goal about user activity: if
+  `$global:context` already contains the answer, prefer a single
+  `"Summarize relevant entries of $global:context"` task over generic
+  filesystem / event-log / process scans. Fall back to those scans only when
+  the goal is explicitly about machine state, or when `$global:context` is
+  empty.
+- When synthesizing worker results: if worker conclusions conflict with
+  `$global:context`, trust `$global:context` and flag the conflict.
+- When asked to resolve a natural-language reference ("those processes", "the
+  file I just listed"), resolve it against `$global:context` entries directly
+  — do not ask the user to spell out indices.
+
+To scrub or shorten the log before the next call, use `Remove-Context`:
+
+```powershell
+Remove-Context                 # clears everything (prompts)
+Remove-Context -Last 3         # drop the last 3 entries
+Remove-Context -HistoryId 42   # drop a specific entry by history id
+$global:context | Where-Object { $_.Command -like '*secret*' } | Remove-Context
+```
 
 ## Conventions
 

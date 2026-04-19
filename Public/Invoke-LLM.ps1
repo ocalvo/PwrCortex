@@ -56,13 +56,13 @@ function Invoke-LLM {
         $script:DebugPreference   = $DebugPreference
         try {
             Write-Verbose "Invoke-LLM: $Provider/$Model, prompt=$($Prompt.Length) chars"
-            $p = @{
+            $completionParams = @{
                 Provider=    $Provider; Model=$Model; SystemPrompt=$SystemPrompt
                 Messages=    @(@{role='user';content=$Prompt})
                 MaxTokens=   $MaxTokens; WithEnv=$WithEnvironment.IsPresent
             }
-            if ($PSBoundParameters.ContainsKey('Temperature')) { $p.Temperature = $Temperature }
-            $resp = script:Invoke-ProviderCompletion @p
+            if ($PSBoundParameters.ContainsKey('Temperature')) { $completionParams.Temperature = $Temperature }
+            $resp = script:Invoke-ProviderCompletion @completionParams
 
             Write-Verbose "Invoke-LLM completed: $($resp.TotalTokens) tokens, $([math]::Round($resp.ElapsedSec,2))s"
             if (-not $Quiet) {

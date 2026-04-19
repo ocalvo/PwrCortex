@@ -32,11 +32,11 @@ function Send-LLMMessage {
         } else {
             $msgs = $Chat.History | ForEach-Object { @{role=$_.Role;content=$_.Content} }
             $msgs += @{role='user';content=$Message}
-            $p = @{
+            $completionParams = @{
                 Provider=$Chat.Provider; Model=$Chat.Model; SystemPrompt=$Chat.SystemPrompt
                 Messages=$msgs; MaxTokens=$Chat.MaxTokens; WithEnv=$Chat.WithEnvironment
             }
-            $resp = script:Invoke-ProviderCompletion @p
+            $resp = script:Invoke-ProviderCompletion @completionParams
             if (-not $Quiet) {
                 script:Write-ResponseBox -Content $resp.Content -Provider $resp.Provider `
                     -Model $resp.Model -InputTokens $resp.InputTokens `

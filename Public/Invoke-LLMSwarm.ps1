@@ -104,6 +104,17 @@ function Invoke-LLMSwarm {
                 $totalInputTokens  += $_.Result.InputTokens
                 $totalOutputTokens += $_.Result.OutputTokens
             }
+            # Subagent tool calls run in the swarm's runspace pool, so the
+            # per-call Agent entries don't reach the outer $global:context.
+            # Instead, record one Swarm entry per completed task with the
+            # live result object (the [LLMResponse]'s .Result if present,
+            # otherwise the response itself).
+            if ($_.Status -eq 'done' -and $_.Result) {
+                $item = if ($_.Result.PSObject.Properties['Result'] -and $null -ne $_.Result.Result) {
+                    $_.Result.Result
+                } else { $_.Result }
+                script:Add-ContextEntry -Source 'Swarm' -Command "$($_.Id): $($_.Name)" -Items @($item)
+            }
         }
 
         # ── Phase 3: Synthesize ───────────────────────────────────────────
@@ -138,10 +149,12 @@ function Invoke-LLMSwarm {
         $result.PSObject.Members.Add(
             [System.Management.Automation.PSMemberSet]::new('PSStandardMembers',[System.Management.Automation.PSMemberInfo[]]@($dds)))
 
-        $globalName = script:Save-GlobalResult -Type 'swarm' -Prompt $Goal -Result $result
-        $result | Add-Member -NotePropertyName GlobalName -NotePropertyValue $globalName
-
-        if (-not $Quiet) { script:Write-SwarmSummary -Result $result }
+        if (-not $Quiet) {
+            script:Write-SwarmSummary -Result $result `
+                -SynthInputTokens  $synth.InputTokens `
+                -SynthOutputTokens $synth.OutputTokens `
+                -SynthElapsedSec   $synth.ElapsedSec
+        }
 
         $done   = @($finishedTasks | Where-Object Status -eq 'done').Count
         $failed = @($finishedTasks | Where-Object Status -eq 'failed').Count

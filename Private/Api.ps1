@@ -125,11 +125,11 @@ function script:Invoke-ProviderCompletion {
           [array]$Messages, [int]$MaxTokens, [double]$Temperature, [bool]$WithEnv)
     Write-Verbose "Provider completion: $Provider/$Model, messages=$($Messages.Count), withEnv=$WithEnv"
     $sys = script:Build-SystemPrompt -UserSystemPrompt $SystemPrompt -IncludeEnv $WithEnv
-    $p   = @{ Model=$Model; SystemPrompt=$sys; Messages=$Messages; MaxTokens=$MaxTokens }
-    if ($PSBoundParameters.ContainsKey('Temperature')) { $p.Temperature = $Temperature }
+    $apiParams = @{ Model=$Model; SystemPrompt=$sys; Messages=$Messages; MaxTokens=$MaxTokens }
+    if ($PSBoundParameters.ContainsKey('Temperature')) { $apiParams.Temperature = $Temperature }
     $raw = switch ($Provider) {
-        'Anthropic' { script:Invoke-AnthropicRaw @p }
-        'OpenAI'    { script:Invoke-OpenAIRaw    @p }
+        'Anthropic' { script:Invoke-AnthropicRaw @apiParams }
+        'OpenAI'    { script:Invoke-OpenAIRaw    @apiParams }
     }
     $r = $raw.Response
     switch ($Provider) {
@@ -181,47 +181,69 @@ $($_.Directive.Trim())
             $sections.Add("<module_directives>`n$($dBlocks -join "`n`n")`n</module_directives>")
         }
 
-        # ── Session context: enumerate $llm_* globals ──────────────────
-        $llmVars = Get-Variable -Scope Global -Name 'llm_*' -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ne 'llm_history' }
-        $historyVar = Get-Variable -Scope Global -Name 'llm_history' -ErrorAction SilentlyContinue
+        # ── Conversation context: recent entries from $global:context ─────
+        $ctxVar = Get-Variable -Scope Global -Name 'context' -ErrorAction SilentlyContinue
+        if ($ctxVar -and $ctxVar.Value -and $ctxVar.Value.Count -gt 0) {
+            $entries = $ctxVar.Value
+            $maxEntries = 20
+            $maxPreviewChars = 500
+            $recent = if ($entries.Count -gt $maxEntries) {
+                $entries | Select-Object -Last $maxEntries
+            } else {
+                $entries
+            }
 
-        if ($llmVars -or ($historyVar -and $historyVar.Value.Count -gt 0)) {
             $ctxLines = [System.Collections.Generic.List[string]]::new()
-            if ($historyVar -and $historyVar.Value.Count -gt 0) {
-                $ctxLines.Add("  Session history ($($historyVar.Value.Count) prior call(s)):")
-                foreach ($h in $historyVar.Value) {
-                    $ctxLines.Add("    #$($h.Index) `$$($h.GlobalName) [$($h.Type)] — $($h.Prompt)")
+            $ctxLines.Add("  $($entries.Count) total entr$(if ($entries.Count -eq 1) {'y'} else {'ies'}); showing last $(@($recent).Count).")
+            foreach ($e in $recent) {
+                $cmd = if ($e.Command) { $e.Command.Trim() } else { '(no command)' }
+                if ($cmd.Length -gt 200) { $cmd = $cmd.Substring(0, 197) + '...' }
+                $src = if ($e.PSObject.Properties['Source']) { $e.Source } else { 'Human' }
+                $ctxLines.Add("  [$src] #$($e.HistoryId) [$($e.Timestamp.ToString('HH:mm:ss'))] `$ $cmd")
+
+                $preview = try {
+                    ($e.Output | Out-String -Width 120).Trim()
+                } catch { '(unable to render output)' }
+                if ($preview.Length -gt $maxPreviewChars) {
+                    $preview = $preview.Substring(0, $maxPreviewChars - 3) + '...'
+                }
+                foreach ($line in ($preview -split "`n")) {
+                    $ctxLines.Add("      $line")
                 }
             }
-            if ($llmVars) {
-                $ctxLines.Add("  Available result variables:")
-                foreach ($v in $llmVars) {
-                    $typeName = if ($null -ne $v.Value) { $v.Value.GetType().Name } else { 'null' }
-                    $preview  = try {
-                        $s = ($v.Value | Out-String -Width 120).Trim()
-                        if ($s.Length -gt 120) { $s.Substring(0,117) + '...' } else { $s }
-                    } catch { '(unable to preview)' }
-                    $ctxLines.Add("    `$$($v.Name) [$typeName] — $preview")
-                }
-            }
-            $sections.Add("<session_context>`n$($ctxLines -join "`n")`n</session_context>")
-            Write-Verbose "Session context: $(@($llmVars).Count) llm_ var(s), $($historyVar.Value.Count) history entries"
+            $sections.Add("<conversation_context>`n$($ctxLines -join "`n")`n</conversation_context>")
+            Write-Verbose "Conversation context: $($entries.Count) total entr$(if ($entries.Count -eq 1) {'y'} else {'ies'}), $(@($recent).Count) shown"
         }
 
-        $sections.Add(@"
+        $sections.Add(@'
 You are an expert PowerShell assistant operating inside the environment described above.
-- Prefer modules already loaded; reference real cmdlets.
-- When using invoke_powershell, emit precise pipeline expressions.
+
+TOOL SURFACE
+- You have ONE tool: `invoke_powershell`. Do NOT refuse work or apologize for missing tools.
+- That single tool gives you the entire in-process PowerShell cmdlet surface. Every capability another coding assistant exposes as a named tool has a native PS equivalent that runs in the same .NET runtime (no IPC, no JSON serialization, no subprocess):
+    * Read a file → `Get-Content <path>`
+    * Write / overwrite a file → `Set-Content -Path <path> -Value <text>` (or `Out-File`)
+    * Append to a file → `Add-Content -Path <path> -Value <text>`
+    * Edit a file → read with Get-Content, transform in memory, write back with Set-Content
+    * Glob / list files → `Get-ChildItem -Path <p> -Filter <pat> -Recurse`
+    * Grep / search text → `Select-String -Path <p> -Pattern <regex>`
+    * Fetch a URL → `Invoke-WebRequest <url>` (HTML/bytes) or `Invoke-RestMethod <url>` (JSON-parsed)
+    * Run a subprocess → `Start-Process`, `& <exe> <args>`, or `$proc = & ... ; $proc.ExitCode`
+    * Inspect / manipulate objects → the full object pipeline (Where-Object, Select-Object, ForEach-Object, Sort-Object, Group-Object, Measure-Object, etc.)
+- New capabilities are added by installing PowerShell modules (`Install-Module <name>`). Every loaded module's public commands are already available to you; any module that ships a claude.md is surfaced in <module_directives> above. Treat modules as first-class skills.
+- Prefer already-loaded modules and real cmdlets over inventing alternatives. When unsure, use `Get-Command`, `Get-Help`, `Get-Member` to discover.
+
+EXECUTION MODEL
 - Tool results are stored in `$refs[id]`. Chain prior results in later calls: `$refs[1] | Sort-Object CPU`.
 - The session is live — variables and state persist across tool calls.
 - Stream output (errors, warnings, verbose, debug) is captured and shown separately.
 - For destructive operations (Remove-, Stop-, Format- etc.) always warn the user before acting.
-- If a module has a claude.md directive, follow its conventions exactly.
 - IMPORTANT: Always compute your final answer through invoke_powershell so the result is a live typed .NET object in `$refs`, not just text. For example, if asked "What is 2+2?", call invoke_powershell with `2+2` so the result is [int]4. The caller accesses your answer via .Result — make sure it contains the real object.
-- When the user refers to prior results in natural language (e.g. "those processes", "the services from before", "filter those top results"), resolve the reference to the matching `$llm_*` variable from <session_context>. Use the variable names, types, and history prompts to infer which prior result the user means. Do NOT require the user to spell out variable names — that is your job.
-- All global variables from the user's PowerShell session are available in your runspace (not just `$llm_*`). When the user references something by description (e.g. "the memory threshold", "the output path"), use `Get-Variable -Scope Global` to discover the matching variable. Always try to resolve references before asking the user for values.
-"@)
+
+CONVERSATION CONTEXT
+- The <conversation_context> block above shows the most recent entries of `$global:context`. Apply the grounding rules from the PwrCortex module directives to interpret them.
+- All global variables from the user's PowerShell session are also available. When the user references something by description ("the memory threshold", "the output path"), use `Get-Variable -Scope Global` to discover the matching variable. Always try to resolve references before asking the user for values.
+'@)
     }
 
     if ($UserSystemPrompt) { $sections.Add($UserSystemPrompt) }
