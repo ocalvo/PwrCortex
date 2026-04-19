@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/ocalvo/PwrCortex/compare/v0.9.0...v0.10.0) (2026-04-19)
+
+
+### Features
+
+* capture session context via Out-Default proxy and ground agents on $global:context ([#31](https://github.com/ocalvo/PwrCortex/issues/31)) ([a343377](https://github.com/ocalvo/PwrCortex/commit/a343377c3e3e5d977097772d8334e265b5dd81f1))
+
 ## [0.9.0](https://github.com/ocalvo/PwrCortex/compare/v0.8.0...v0.9.0) (2026-04-16)
 
 
